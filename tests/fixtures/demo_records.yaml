@@ -1,0 +1,24 @@
+# A hand-written arrival history for the demo program, including a delayed measurement and a
+# revised forecast. Timestamps are quoted so YAML cannot strip their timezones.
+records:
+  - {id: m1, source: station, feature: temp, event_time: "2024-01-01T00:00:00Z", value: 270.0}
+  - {id: m2, source: station, feature: temp, event_time: "2024-01-01T01:00:00Z", value: 271.5}
+  # Observed at 02:00 but not delivered until 05:00: invisible to the 03:00 request.
+  - {id: m3_late, source: station, feature: temp, event_time: "2024-01-01T02:00:00Z",
+     available_time: "2024-01-01T05:00:00Z", value: 999.0}
+  - {id: m4, source: station, feature: temp, event_time: "2024-01-01T03:00:00Z", value: 272.0}
+
+  # Two issues for the same valid time; the second is published before the request.
+  - {id: f_old, kind: forecast, source: nwp, feature: temp_fc,
+     event_time: "2024-01-01T00:00:00Z", issued_time: "2024-01-01T00:00:00Z",
+     available_time: "2024-01-01T00:00:00Z", valid_time: "2024-01-01T06:00:00Z", value: 274.0}
+  - {id: f_new, kind: forecast, source: nwp, feature: temp_fc,
+     event_time: "2024-01-01T02:00:00Z", issued_time: "2024-01-01T02:00:00Z",
+     available_time: "2024-01-01T02:30:00Z", valid_time: "2024-01-01T06:00:00Z", value: 275.0}
+  # Issued after the request; must never be selected.
+  - {id: f_future, kind: forecast, source: nwp, feature: temp_fc,
+     event_time: "2024-01-01T04:00:00Z", issued_time: "2024-01-01T04:00:00Z",
+     available_time: "2024-01-01T04:00:00Z", valid_time: "2024-01-01T06:00:00Z", value: 280.0}
+
+requests:
+  - {at: "2024-01-01T03:00:00Z"}

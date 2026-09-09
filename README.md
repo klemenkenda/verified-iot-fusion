@@ -51,16 +51,26 @@ artifact produced.
 
 ## Status
 
-**Phase 1 complete** — deterministic skeleton. The package installs from a lockfile, CI
-checks lint, types, and tests on Linux and Windows, and two identical runs produce
-byte-identical outputs with equivalent manifests.
+**Phase 3 complete** — the DSL, compiler, and runtime. A human-written feature program
+compiles, replays with verified lineage, and agrees between the streaming and batch paths
+within the declared per-operator tolerance. 427 tests; CI checks lint, types, and tests on
+Linux and Windows.
 
-The temporal core does not exist yet: nothing here models `event_time`, `available_time`,
-or label reveal. That is Phase 2, and it is built oracle-first — see
-[docs/execution_plan.md](docs/execution_plan.md). The synthetic fixture is deliberately
-semantics-free so that it does not pre-empt that design.
+Try the demonstration:
 
-See section 11 of the plan for the phased roadmap and section 15 for the decision gates.
+```bash
+uv run vifusion compile configs/programs/synthetic_demo.yaml
+uv run vifusion explain configs/programs/synthetic_demo.yaml --records tests/fixtures/demo_records.yaml
+```
+
+The record log contains an observation made *inside* the window but delivered two hours
+late, carrying an absurd value, and a better forecast issued after the prediction time.
+Both are withheld, and neither appears in any feature's lineage.
+
+Next is **Gate A** (section 15): the decision point on whether the correctness-and-benchmark
+paper is viable on the evidence so far, and — per
+[docs/execution_plan.md](docs/execution_plan.md) — the point at which the schedule is
+recalibrated from measured velocity rather than estimated.
 
 ## Naming
 

@@ -731,19 +731,19 @@ Exit criteria continue to govern progress more strongly than elapsed time.
 
 **Tasks**
 
-- [ ] Define the versioned JSON/YAML DSL schema.
-- [ ] Implement the initial operator registry.
-- [ ] Add type, unit, availability, lineage, cycle, and resource analyses.
-- [ ] Compile accepted programs into streaming execution, and into batch execution only for nodes with a registered equivalent lowering.
-- [ ] Generate feature cards and execution plans.
-- [ ] Implement batch/stream differential tests.
+- [x] Define the versioned JSON/YAML DSL schema.
+- [x] Implement the initial operator registry.
+- [x] Add type, unit, availability, lineage, cycle, and resource analyses.
+- [x] Compile accepted programs into streaming execution, and into batch execution only for nodes with a registered equivalent lowering.
+- [x] Generate feature cards and execution plans.
+- [x] Implement batch/stream differential tests.
 
 **Acceptance tests**
 
-- [ ] Every invalid synthetic program returns a stable diagnostic code.
-- [ ] Every operator has semantic, unit, boundary, and property tests.
-- [ ] Batch and stream outputs match on generated cases within the declared per-operator tolerance, with exact agreement on lineage and accept/reject outcomes.
-- [ ] Measured state does not exceed the compiled bound after warm-up.
+- [x] Every invalid synthetic program returns a stable diagnostic code.
+- [x] Every operator has semantic, unit, boundary, and property tests.
+- [x] Batch and stream outputs match on generated cases within the declared per-operator tolerance, with exact agreement on lineage and accept/reject outcomes.
+- [x] Measured state does not exceed the compiled bound after warm-up.
 
 **Exit criterion:** A human-written feature program can be compiled and replayed on the synthetic dataset with verified lineage.
 
@@ -1076,9 +1076,9 @@ The first six working days should produce a reviewable vertical slice. With an a
 
 ### Day 4
 
-- [ ] Define the first DSL schema as a JSON dataflow graph and compile one human-written pipeline.
-- [ ] Produce batch and streaming outputs and compare them under the parity policy of section 10.2.
-- [ ] Generate a feature card that shows source, window, unit, availability rule, and memory bound.
+- [x] Define the first DSL schema as a JSON dataflow graph and compile one human-written pipeline.
+- [x] Produce batch and streaming outputs and compare them under the parity policy of section 10.2.
+- [x] Generate a feature card that shows source, window, unit, availability rule, and memory bound.
 
 ### Days 5–6
 

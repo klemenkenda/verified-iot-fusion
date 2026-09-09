@@ -1,0 +1,77 @@
+# A human-written feature program: the Phase 3 exit criterion is that one of these compiles
+# and replays on the synthetic dataset with verified lineage.
+#
+# It is written the way the LLM proposer will be required to write one (section 5.3): a JSON
+# dataflow graph of {id, op, inputs, params} nodes, not an infix expression. Every operator
+# resolves against the registry whitelist, and no generated string ever reaches an
+# interpreter — which is why prompt injection through dataset metadata is structurally
+# contained rather than filtered (section 7.2).
+schema_version: "0.1.0"
+name: synthetic_demo
+
+sources:
+  # max_input_rate_per_hour is required for any windowed operator: section 5.3 is explicit
+  # that state cannot be bounded by lookback alone, because a bursty source makes even a
+  # one-hour window unbounded.
+  - source_id: station
+    feature_name: temp
+    kind: measurement
+    value_type: number
+    unit: kelvin
+    max_input_rate_per_hour: 4
+    description: Air temperature reported by the station.
+
+  - source_id: nwp
+    feature_name: temp_fc
+    kind: forecast
+    value_type: number
+    unit: kelvin
+    max_input_rate_per_hour: 2
+    description: Revisable numerical weather prediction for air temperature.
+
+nodes:
+  - id: temp_now
+    op: last
+    params: {source: station, feature: temp, max_staleness: 3h}
+
+  - id: temp_mean_6h
+    op: mean
+    params: {source: station, feature: temp, window: 6h}
+
+  - id: temp_sd_6h
+    op: stddev
+    params: {source: station, feature: temp, window: 6h}
+
+  - id: temp_age
+    op: staleness
+    params: {source: station, feature: temp}
+
+  - id: temp_gaps_6h
+    op: missing_count
+    params: {source: station, feature: temp, window: 6h, expected_interval: 1h}
+
+  # A forecast for three hours ahead, selected by issue time as of the prediction time.
+  - id: temp_fc_3h
+    op: forecast
+    params: {source: nwp, feature: temp_fc, lead: 3h}
+
+  # The forecast's disagreement with the latest observation. Both operands are kelvin, so
+  # the unit checker accepts the subtraction and annotates the result as kelvin.
+  - id: fc_minus_now
+    op: subtract
+    inputs: [temp_fc_3h, temp_now]
+
+  # How far the current reading sits from its own recent mean.
+  - id: temp_anomaly
+    op: subtract
+    inputs: [temp_now, temp_mean_6h]
+
+outputs:
+  - temp_now
+  - temp_mean_6h
+  - temp_sd_6h
+  - temp_age
+  - temp_gaps_6h
+  - temp_fc_3h
+  - fc_minus_now
+  - temp_anomaly

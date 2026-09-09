@@ -921,6 +921,7 @@ name = "vifusion"
 version = "0.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "pint" },
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
@@ -928,7 +929,6 @@ dependencies = [
 [package.optional-dependencies]
 data = [
     { name = "duckdb" },
-    { name = "pint" },
     { name = "polars" },
 ]
 ml = [
@@ -949,7 +949,7 @@ dev = [
 requires-dist = [
     { name = "duckdb", marker = "extra == 'data'", specifier = ">=1.0" },
     { name = "lightgbm", marker = "extra == 'ml'", specifier = ">=4.5" },
-    { name = "pint", marker = "extra == 'data'", specifier = ">=0.24" },
+    { name = "pint", specifier = ">=0.24" },
     { name = "polars", marker = "extra == 'data'", specifier = ">=1.0" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pyyaml", specifier = ">=6.0" },

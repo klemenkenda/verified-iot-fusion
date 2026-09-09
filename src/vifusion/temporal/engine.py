@@ -189,6 +189,13 @@ class FeatureEngine:
         self.specs = tuple(specs)
         self._streams: dict[StreamKey, StreamState] = {}
         self._forecasts: dict[StreamKey, ForecastState] = {}
+        self.peak_state_records = 0
+        """High-water mark of retained records, measured after each prune.
+
+        Section 10.2 invariant 5 requires measured state to stay within the compiler's
+        declared bound after warm-up, and H4 reports peak memory. Measuring here rather than
+        estimating from the plan is the point: the bound is a claim, and this is the
+        observation that can falsify it."""
 
         for stream, group in _group_by_stream(self.specs).items():
             forecast_specs = [spec for spec in group if isinstance(spec, ForecastValue)]
@@ -227,6 +234,10 @@ class FeatureEngine:
             state.prune(prediction_time, stream)
         for forecasts in self._forecasts.values():
             forecasts.prune(prediction_time)
+        retained = sum(len(state.window) for state in self._streams.values()) + sum(
+            len(forecasts.entries) for forecasts in self._forecasts.values()
+        )
+        self.peak_state_records = max(self.peak_state_records, retained)
         return FeatureVector(
             entity_id=entity_id,
             prediction_time=prediction_time,

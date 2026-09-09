@@ -64,6 +64,9 @@ class ReplayResult:
     revealed_labels: tuple[str, ...] = field(default_factory=tuple)
     """Every label reveal seen, in reveal order."""
 
+    peak_state_records: int = 0
+    """Measured high-water mark of retained records, for invariant 5 of section 10.2."""
+
     def vector_at(self, prediction_time: datetime) -> FeatureVector:
         for vector in self.vectors:
             if vector.prediction_time == prediction_time:
@@ -136,4 +139,5 @@ def replay(
         vectors=tuple(vectors),
         usable_labels=tuple(usable_labels),
         revealed_labels=tuple(revealed),
+        peak_state_records=engine.peak_state_records,
     )

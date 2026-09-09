@@ -335,3 +335,81 @@ different instrument.
 - **Regression tests:** `tests/differential/test_scenarios_engine.py`,
   `tests/property/test_temporal_invariants.py`.
 - **Phase / gate:** Phase 2
+
+### 2026-09-09 — Phase 3: the three inputs that were open, decided provisionally
+
+The execution plan flagged these as needing the researcher's input before S2. They are
+experimental instruments that freeze at **Gate C**, not now, so the compiler was built
+against a first proposal rather than blocked on one. Each is cheap to change before the
+freeze and expensive after it.
+
+- **(a) Diagnostic-code taxonomy.** Seven families — `E-SCHEMA`, `E-RESOLVE`, `E-GRAPH`,
+  `E-TYPE`, `E-UNIT`, `E-TIME`, `E-RESOURCE` — and 22 codes, in
+  `src/vifusion/compiler/diagnostics.py`. The families are chosen so a row of the H2b
+  confusion matrix answers a question someone would ask: `E-TIME` is the family the
+  correctness claim is about, while `E-SCHEMA` and `E-RESOLVE` mostly measure how well the
+  model writes conforming output, which should not be pooled with it. `FROZEN_AT` records
+  in code that the taxonomy is still open. One code, `WINDOW_UNBOUNDED`, was removed after
+  being written because nothing could produce it — a permanently empty row is worse than a
+  missing one, since it reads as evidence of absence.
+- **(b) Parity tolerances.** Counts and extrema exact (0 ulp), sum and mean 4 ulp, variance
+  and stddev 16 ulp, declared in the registry and asserted in `tests/differential/`.
+- **(c) Operator registry scope.** Sixteen operators: the first sprint's set plus the four
+  arithmetic combinators the dataflow graph needs for its edges to mean anything. No
+  quantile, no cross-entity, no calendar features — section 14 says operators enter only
+  from documented failure analysis, so the initial set is the smallest that can express the
+  demonstration.
+
+- **Made before or after viewing test results:** not applicable
+- **Phase / gate:** Phase 3, frozen at Gate C
+
+### 2026-09-09 — State bounds are summed per stream, not per node
+
+- **Decision:** `ExecutionPlan.total_state_records` sums the largest reach on each *stream*;
+  `max_stream_records` is what the runtime enforces per stream.
+- **Rationale:** The engine keeps one buffer per stream, so three six-hour aggregates over
+  one source share a single window. Summing per node reported 78 records for the demo
+  program where 26 are retained — a threefold overstatement. The figure feeds H4's memory
+  reporting, so an upper bound three times the truth would be a misleading number in the
+  paper rather than a conservative one.
+- **Affected experiments / artifacts:** `src/vifusion/compiler/compile.py`, feature cards,
+  and the H4 cost table.
+- **Phase / gate:** Phase 3
+
+### 2026-09-09 — Novelty argument drafted by the assistant, reversing the earlier decision
+
+- **Decision:** The `relationship_to_this_work` column and
+  [`docs/novelty.md`](novelty.md) were drafted by the assistant at the researcher's explicit
+  instruction, reversing the 2026-09-09 entry that left both to the researcher. Drafts are
+  marked as such and require the researcher's verification and ownership before Gate A.
+- **How it was done:** all nine PDFs were text-extracted and read in full rather than
+  summarised from abstracts. Full-text reading corrected several factual cells recorded
+  earlier at abstract depth, so the matrix's non-novelty columns changed too.
+- **What the reading changed, substantively:**
+  1. **OCTree evaluates on Enefit** — this project's primary dataset — with a time-index
+     split, improving XGBoost by 2.3% (GPT-4o) and 0.0% (Llama 2); CAAFE manages 0.4%. The
+     closest competitor has already run on our headline dataset. It flattens Enefit to
+     static columns and discards `data_block_id`, which is the gap; but H1 must now clear a
+     published number, and M2/M3 must be at least as strong as their XGBoost baseline for
+     the comparison to mean anything.
+  2. **Feast is the real threat to contribution 1**, not any of the LLM papers. Its
+     `event timestamp`/`created timestamp` pair with `filter_by_created_timestamp` is the
+     `event_time`/`available_time` distinction in production infrastructure. The novelty
+     claim is narrowed accordingly: never claim the distinction, only its verification over
+     generated programs.
+  3. **LLM-FE equalises baselines on LLM samples** (fixed budget of 20), precisely the axis
+     section 9.4 rejects. That is a concrete, citable methodological contrast for the
+     fairness argument rather than a hypothetical one.
+  4. **No generating method in the matrix verifies anything semantic.** Validity means
+     whitelist-passes (CAAFE), scores-well (OCTree), executes-without-raising (LLM-FE), or
+     parses-and-runs (FeatEHR-LLM). This is why contribution 2 is the strongest claim and
+     should lead.
+- **Alternatives considered:** Leaving the column empty as previously decided. Overridden by
+  the researcher.
+- **Residual risk:** A drafted novelty argument is harder to disagree with than an empty
+  cell — the exact reason the earlier entry declined. Mitigation is the draft banner in
+  `novelty.md` plus the requirement that the researcher confirm before Gate A.
+- **Affected experiments / artifacts:** `docs/literature_matrix.csv`, `docs/novelty.md`,
+  `docs/risk_register.md` (R-03 status).
+- **Made before or after viewing test results:** not applicable
+- **Phase / gate:** Phase 0, frozen at Gate A

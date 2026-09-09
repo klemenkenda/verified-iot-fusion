@@ -15,11 +15,14 @@ authors = [{ name = "Klemen Kenda", email = "klemen.kenda@ijs.si" }]
 dependencies = [
     "pydantic>=2.9",
     "pyyaml>=6.0",
+    # Compile-time dimensional analysis only: section 6 keeps Pint quantities out of the
+    # hot loop, because they would dominate the very latency numbers RQ4 reports.
+    "pint>=0.24",
 ]
 
 [project.optional-dependencies]
 # Phase 3 onwards: columnar transformation, analytical replay, compile-time units.
-data = ["polars>=1.0", "duckdb>=1.0", "pint>=0.24"]
+data = ["polars>=1.0", "duckdb>=1.0"]
 # Phase 6 onwards: incremental models and the tabular baseline.
 ml = ["river>=0.21", "lightgbm>=4.5"]
 

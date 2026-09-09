@@ -1,0 +1,150 @@
+"""The versioned feature DSL.
+
+Section 5.3 fixes the representation: a JSON dataflow graph, a list of ``{id, op, inputs,
+params}`` nodes, **not** an infix expression language. That choice has three consequences the
+project depends on — schema-constrained decoding makes well-formed model output cheap,
+validation is Pydantic plus a topological check rather than a hand-written parser, and every
+diagnostic is addressable as ``(node_id, code, message)``, which is what makes the repair
+loop of section 7 mechanical rather than conversational.
+
+Parsing here is deliberately permissive about *meaning* and strict about *shape*. Anything
+that is a well-formed graph parses; whether its operators exist, its types agree, its units
+are compatible, and its windows are bounded is the compiler's job, because those questions
+produce the diagnostic codes that H2b counts. A parser that rejected an unknown operator
+would report it as a schema error and lose that distinction.
+
+Sources declare ``max_input_rate_per_hour``. Section 5.3 is explicit that state bounds are
+**not** statically computable from lookback alone — state is a function of lookback *and*
+arrival rate, and a bursty source makes a one-hour window unbounded — so the declaration is
+required rather than inferred, and its absence is a diagnostic rather than a default.
+"""
+
+from __future__ import annotations
+
+import re
+from datetime import timedelta
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from vifusion.temporal.records import RecordKind
+
+DSL_SCHEMA_VERSION = "0.1.0"
+
+ValueType = Literal["number", "category"]
+
+TimeDirection = Literal["past_only", "known_future", "static"]
+"""``past_only`` reads observations; ``known_future`` reads forecasts, whose valid time may
+follow the prediction time; ``static`` reads facts that do not vary."""
+
+_DURATION = re.compile(r"^(?P<sign>-?)(?P<amount>\d+(?:\.\d+)?)(?P<unit>[smhd])$")
+_UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
+
+
+class DslError(ValueError):
+    """A document is not a well-formed feature program."""
+
+
+def parse_duration(text: str) -> timedelta:
+    """Parse ``"30s"``, ``"15m"``, ``"2h"``, ``"1d"``, optionally negative.
+
+    Durations are text in the DSL rather than seconds, because a model emitting ``3600``
+    where an hour was meant produces a plausible wrong program, while ``"1h"`` does not.
+    """
+    match = _DURATION.match(text)
+    if match is None:
+        raise DslError(f"cannot parse duration {text!r}; use forms like '30s', '15m', '2h', '1d'")
+    magnitude = timedelta(**{_UNITS[match["unit"]]: float(match["amount"])})
+    return -magnitude if match["sign"] else magnitude
+
+
+def format_duration(value: timedelta) -> str:
+    """Render a duration in the DSL's own vocabulary, for feature cards and round trips."""
+    seconds = value.total_seconds()
+    sign = "-" if seconds < 0 else ""
+    seconds = abs(seconds)
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if seconds and seconds % size == 0:
+            return f"{sign}{int(seconds // size)}{unit}"
+    return f"{sign}{int(seconds)}s"
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class SourceSchema(_Strict):
+    """One declared input stream, and everything the compiler needs to bound it."""
+
+    source_id: str
+    feature_name: str
+    kind: RecordKind = RecordKind.MEASUREMENT
+    value_type: ValueType = "number"
+    unit: str | None = None
+    """A Pint-parseable unit, or None for a dimensionless or categorical stream."""
+
+    max_input_rate_per_hour: Annotated[float, Field(gt=0)] | None = None
+    """Required to derive a state bound; its absence is E-RESOURCE-001, not a default."""
+
+    description: str | None = None
+    """Untrusted text from dataset documentation. See section 7.2 on prompt injection:
+    containment is the output contract, not filtering, so this is carried but never
+    interpreted."""
+
+    @property
+    def stream_key_suffix(self) -> tuple[str, str]:
+        return (self.source_id, self.feature_name)
+
+
+class Node(_Strict):
+    """One operator application. ``inputs`` name other nodes; ``params`` are literals."""
+
+    id: str
+    op: str
+    inputs: list[str] = Field(default_factory=list)
+    params: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("id")
+    @classmethod
+    def _plain_id(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+            raise ValueError(
+                f"node id {value!r} must be an identifier: letters, digits, and underscores"
+            )
+        return value
+
+
+class FeatureProgram(_Strict):
+    """A complete, hashable feature program.
+
+    The program is written once and instantiated per entity (section 5.3), so it names no
+    entity. Cross-entity references resolve through a declared entity graph, never an
+    implicit join; that graph arrives with the cross-entity operators in a later phase.
+    """
+
+    schema_version: str
+    name: str
+    sources: list[SourceSchema]
+    nodes: list[Node]
+    outputs: list[str]
+
+    @field_validator("schema_version")
+    @classmethod
+    def _known_version(cls, value: str) -> str:
+        if value != DSL_SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported DSL schema_version {value!r}; this build reads {DSL_SCHEMA_VERSION!r}"
+            )
+        return value
+
+    def source(self, source_id: str, feature_name: str) -> SourceSchema | None:
+        for source in self.sources:
+            if source.source_id == source_id and source.feature_name == feature_name:
+                return source
+        return None
+
+    def node(self, node_id: str) -> Node | None:
+        for node in self.nodes:
+            if node.id == node_id:
+                return node
+        return None
