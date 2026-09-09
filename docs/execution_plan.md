@@ -14,6 +14,7 @@ and this file governs the schedule.
 | Focused days per week | 2, with implementation delegated to the assistant | 2026-09-09 |
 | Software license | MIT | 2026-09-09 |
 | Minimum datasets | Enefit, USCRN, Beijing, synthetic oracle suite | 2026-09-09 |
+| Enefit non-commercial clause | Release is non-commercial; commercial upon agreement | 2026-09-09 |
 | Compute/API budget | OpenRouter, $50/day | 2026-09-09 |
 
 ## 2. Shape of the execution

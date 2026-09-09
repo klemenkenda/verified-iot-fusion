@@ -5,11 +5,17 @@ from each cluster in [the literature matrix](literature_matrix.csv). Companion t
 [the problem statement](problem_statement.md), which states the claim and its refutation
 conditions. **Freeze at Gate A.**
 
-> **Draft status.** Written by the assistant from full-text reads of all nine papers and
-> both documentation sources in [docs/literature/](literature/README.md). The researcher
-> must verify and take ownership before Gate A: this is the argument that has to survive
-> review, and a claim nobody re-derived is exactly the failure mode
-> [R-03](risk_register.md) describes.
+> **Status: provisionally accepted 2026-09-09; researcher verification still outstanding.**
+> Written by the assistant from full-text reads of all nine papers and both documentation
+> sources in [docs/literature/](literature/README.md). The researcher has accepted the
+> argument and deferred checking it against the sources.
+>
+> That check is now the **last open item in Phase 0** and it is overdue against its own
+> schedule: this memo was to freeze at Gate A, and Gate A evidence is already committed.
+> Two passages carry the most risk if the reading disagrees with the draft — the **Feast
+> narrowing** of contribution 1, which unilaterally reduces a claim, and the
+> **OCTree-on-Enefit** framing, which sets the bar H1 must clear. A claim nobody re-derived
+> is exactly the failure mode [R-03](risk_register.md) describes.
 
 ## Central claim
 

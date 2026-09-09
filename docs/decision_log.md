@@ -522,3 +522,65 @@ freeze and expensive after it.
   are really `E-TIME`. Genuinely unresolvable inputs are still caught, in an earlier pass.
 - **Regression test:** `test_diagnostics_do_not_cascade`.
 - **Phase / gate:** Phase 3–4
+
+### 2026-09-09 — Enefit non-commercial clause resolved
+
+- **Decision:** The intended artifact release is **non-commercial**; commercial use is
+  available **upon agreement**. This resolves the section 8.1 clause that
+  `docs/research_plan.md` line 379 requires be settled in Phase 0 rather than Phase 11,
+  because it constrains what the archived Zenodo release may contain.
+- **Consequences for the archive:** Enefit data itself is still not redistributable under
+  CC BY-NC-SA in a form that would relicense it. Phase 11 ships download scripts, checksums,
+  split manifests, and derived metadata — never the raw competition data. That was already
+  the plan's approach; this decision confirms nothing in the release posture forces a change.
+- **UNRESOLVED TENSION, flagged not decided:** the code licence is **MIT**, which grants
+  commercial use irrevocably and without agreement. "Commercial upon agreement" therefore
+  cannot apply to the `vifusion` source as currently licensed. Three readings, and the
+  researcher must pick one before any public release:
+  1. the restriction applies only to the *data and derived non-code artifacts* — MIT stands,
+     nothing to change (most likely, and consistent with the Phase 0 task as written);
+  2. the restriction is meant to cover the *code* as well — then MIT is the wrong licence
+     and the 2026-09-09 licence decision must be reopened (dual-licensing, or a
+     non-commercial source licence such as PolyForm Noncommercial);
+  3. commercial terms are intended to attach to *IJS's involvement* rather than to the
+     artifact — no licence change needed, but the manuscript and README should not imply
+     otherwise.
+- **Affected experiments / artifacts:** `docs/execution_plan.md`; Phase 11 packaging;
+  potentially `LICENSE` and `CITATION.cff` if reading 2 is intended.
+- **Made before or after viewing test results:** not applicable
+- **Phase / gate:** Phase 0, code-licence question revisited before Phase 11
+
+### 2026-09-09 — Schedule recalibrated at Gate A from measured velocity
+
+- **Decision:** The 2026-09-09 availability decision deferred the calendar date to Gate A,
+  to be set from measured velocity. The measurement is in: **Phases 0–4 plus Gate A evidence
+  took 6 researcher hours**, against 33–55 estimated human hours in the section 7 inventory
+  and 6.0 effort-weeks in the section 11.0 revised column. Recalibrated estimate is
+  **roughly 3–5 months to submission** rather than 13. No date is committed yet; see below.
+- **Alternatives considered:** Committing a date now. Rejected — two of the three largest
+  remaining blocks (manuscript 30–50 h, interpretation 10–15 h) have not started, and both
+  are researcher-bound. Every hour measured so far is assistant-bound work, which is the
+  wrong basis for projecting researcher-bound work. A second reading at Phase 5 gives the
+  right basis.
+- **Rationale:** The disagreement recorded on 2026-09-09 — the researcher expected the
+  13-month figure to be pessimistic under this division of labour, by an unknown factor —
+  is resolved empirically as the entry intended. The factor is large.
+- **The finding that matters more than the speedup:** measured against the human-bound rows
+  that section 11.0 says do *not* compress, 6 h against 33–55 h means much of the difference
+  is **work deferred rather than work compressed**. Carried debt is 27–44 h: Phase 0 close
+  reading (15–25), Phase 2 `temporal/` line-by-line review (6–10), Phase 3 compiler review
+  (4–6), Gate A deliberation (2–3). This debt sits directly beneath the correctness claim.
+- **Consequence for the risk register:** R-01 downgraded — the schedule risk it describes was
+  real and is now measured away. **R-02 is correspondingly promoted to the project's dominant
+  risk and marked realized:** the same velocity that retired R-01 produced it. The oracle-first
+  ordering is visibly working — two engine defects were caught by the differential and
+  property suites rather than by reading — but the oracle covers only what the scenarios
+  enumerate, so it does not discharge the review.
+- **Recommendation recorded, not enacted:** do not begin Phase 5 before the Phase 2–3 review
+  debt is paid down. Phase 5 is where `available_time` reconstruction has to be defended in
+  print, and defending it on top of an unreviewed temporal core is the specific failure this
+  plan was written to avoid.
+- **Affected experiments / artifacts:** `docs/risk_register.md` (Calendar section, R-01,
+  R-02).
+- **Made before or after viewing test results:** not applicable
+- **Phase / gate:** Gate A; revisited after Phase 5
