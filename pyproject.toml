@@ -18,6 +18,11 @@ dependencies = [
     # Compile-time dimensional analysis only: section 6 keeps Pint quantities out of the
     # hot loop, because they would dominate the very latency numbers RQ4 reports.
     "pint>=0.24",
+    # The IANA timezone database, pinned rather than inherited from the host. Windows
+    # ships none at all, and where an OS does provide one its version is unrecorded --
+    # which is the defect docs/original_system_audit.md finding 6 describes, in a new
+    # form: a calendar feature must not depend on which machine computed it.
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
@@ -47,9 +52,11 @@ packages = ["src/vifusion"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers -q"
+# Section 10.5 requires performance tests to run separately from the fast suite, so the
+# default invocation excludes them; CI runs them in a step of their own.
+addopts = "--strict-markers -q -m 'not slow'"
 markers = [
-    "slow: excluded from the default developer loop",
+    "slow: performance tests, run separately per section 10.5",
 ]
 
 [tool.ruff]

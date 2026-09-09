@@ -753,16 +753,16 @@ This phase was originally a two-week parity project. It is reduced because its e
 
 **Tasks**
 
-- [ ] Express the original paper's measurement, autoregressive, date/time, and weather feature groups in the DSL as the M2 baseline.
-- [ ] Recreate the three conceptual stages — preprocessing, partial fusion, full fusion — at the level of the feature program, not the runtime.
-- [ ] Write compatibility notes for original resampling, forecast handling, and horizon behavior.
-- [ ] Spot-check a handful of representative `iot-fusion` configurations against the new engine, per section 10.4.
-- [ ] Benchmark the new in-process engine on equivalent synthetic loads.
+- [x] Express the original paper's measurement, autoregressive, date/time, and weather feature groups in the DSL as the M2 baseline.
+- [x] Recreate the three conceptual stages — preprocessing, partial fusion, full fusion — at the level of the feature program, not the runtime.
+- [x] Write compatibility notes for original resampling, forecast handling, and horizon behavior.
+- [x] Spot-check a handful of representative `iot-fusion` configurations against the new engine, per section 10.4.
+- [x] Benchmark the new in-process engine on equivalent synthetic loads.
 
 **Acceptance tests**
 
-- [ ] The DSL expresses every feature group used in the original paper, or the inexpressible cases are documented as a stated limitation of the DSL.
-- [ ] Spot-check differences are classified and recorded in `docs/compatibility.md`.
+- [x] The DSL expresses every feature group used in the original paper, or the inexpressible cases are documented as a stated limitation of the DSL.
+- [x] Spot-check differences are classified and recorded in `docs/compatibility.md`.
 
 **Exit criterion:** M2 is a defensible expert baseline and the relationship to the original system is documented. Restore the full parity project only if a coauthor or reviewer requires demonstrated continuity; it is a schedule risk rather than a source of evidence.
 

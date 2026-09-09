@@ -27,6 +27,7 @@ sources:
     value_type: number
     unit: kelvin
     max_input_rate_per_hour: 2
+    max_forecast_horizon: 24h
     description: Revisable numerical weather prediction for air temperature.
 
 nodes:

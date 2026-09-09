@@ -27,10 +27,12 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
+from vifusion.temporal import calendar
 from vifusion.temporal.boundaries import in_trailing_window, within_staleness
 from vifusion.temporal.records import CanonicalRecord, RecordKind
 from vifusion.temporal.specs import (
     Aggregate,
+    CalendarFeature,
     FeatureSpec,
     FeatureValue,
     FeatureVector,
@@ -197,7 +199,10 @@ class FeatureEngine:
         estimating from the plan is the point: the bound is a claim, and this is the
         observation that can falsify it."""
 
-        for stream, group in _group_by_stream(self.specs).items():
+        # Calendar specs read no stream, so they must not create one: grouping them by
+        # their (empty) stream key would allocate a buffer nothing ever fills.
+        stream_specs = [spec for spec in self.specs if spec.reads_stream]
+        for stream, group in _group_by_stream(stream_specs).items():
             forecast_specs = [spec for spec in group if isinstance(spec, ForecastValue)]
             other_specs = [spec for spec in group if not isinstance(spec, ForecastValue)]
             if forecast_specs:
@@ -245,6 +250,13 @@ class FeatureEngine:
         )
 
     def _evaluate_spec(self, spec: FeatureSpec, prediction_time: datetime) -> FeatureValue:
+        if isinstance(spec, CalendarFeature):
+            return FeatureValue(
+                name=spec.name,
+                value=calendar.evaluate(
+                    spec.field, prediction_time, spec.timezone, frozenset(spec.holidays)
+                ),
+            )
         if isinstance(spec, ForecastValue):
             return self._forecast(spec, prediction_time)
         state = self._streams.get(spec.stream_key)

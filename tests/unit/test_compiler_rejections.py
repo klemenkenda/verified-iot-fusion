@@ -50,6 +50,7 @@ def valid_program() -> dict[str, Any]:
                 "value_type": "number",
                 "unit": "kelvin",
                 "max_input_rate_per_hour": 2,
+                "max_forecast_horizon": "24h",
             },
         ],
         "nodes": [
@@ -111,6 +112,24 @@ def _bad_unit_source() -> dict[str, Any]:
     return program
 
 
+def _unknown_calendar() -> dict[str, Any]:
+    program = valid_program()
+    program["nodes"].append(
+        {"id": "hol", "op": "is_holiday", "params": {"timezone": "UTC", "calendar": "absent"}}
+    )
+    program["outputs"].append("hol")
+    return program
+
+
+def _unknown_timezone() -> dict[str, Any]:
+    program = valid_program()
+    program["nodes"].append(
+        {"id": "hod", "op": "hour_of_day", "params": {"timezone": "Mars/Olympus_Mons"}}
+    )
+    program["outputs"].append("hod")
+    return program
+
+
 def _no_declared_rate() -> dict[str, Any]:
     program = valid_program()
     program["sources"][0].pop("max_input_rate_per_hour")
@@ -133,6 +152,8 @@ CASES: list[tuple[Code, dict[str, Any], dict[str, Any]]] = [
         {},
     ),
     (Code.UNKNOWN_OUTPUT, _mutate(outputs=["t_last", "never_defined"]), {}),
+    (Code.UNKNOWN_CALENDAR, _unknown_calendar(), {}),
+    (Code.UNKNOWN_TIMEZONE, _unknown_timezone(), {}),
     (Code.CYCLE, _cycle(), {}),
     (
         Code.DUPLICATE_NODE_ID,

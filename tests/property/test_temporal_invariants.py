@@ -192,8 +192,13 @@ def test_reordering_the_log_does_not_change_the_result(
 def test_replay_is_deterministic_across_runs(
     records: list[CanonicalRecord], times: list[datetime]
 ) -> None:
-    """Phase 2 acceptance test: replay is deterministic."""
-    assert replay(records, _requests(times), SPECS) == replay(records, _requests(times), SPECS)
+    """Phase 2 acceptance test: replay is deterministic.
+
+    Compared through ``deterministic_view`` because the result also carries per-request wall
+    times, which measure the machine rather than the computation.
+    """
+    first = replay(records, _requests(times), SPECS).deterministic_view()
+    assert first == replay(records, _requests(times), SPECS).deterministic_view()
 
 
 @given(records=_records(), times=_PREDICTION_TIMES)

@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from vifusion.dsl.schema import TimeDirection, ValueType
+from vifusion.temporal.calendar import CalendarField
 from vifusion.temporal.specs import Aggregate
 
 UnitRule = Literal["preserve", "multiply", "divide", "dimensionless", "seconds", "custom"]
@@ -72,6 +73,9 @@ class Operator:
     windowed: bool = False
     """True when the operator retains a window and therefore consumes bounded state."""
 
+    calendar_field: CalendarField | None = None
+    """Set for date/time operators, linking the operator to its calendar field."""
+
     output_follows_source: bool = False
     """True when the output type and unit are the source's rather than the operator's.
 
@@ -86,6 +90,29 @@ class Operator:
     @property
     def all_params(self) -> frozenset[str]:
         return self.required_params | self.optional_params
+
+
+def _calendar_operator(field: CalendarField, summary: str) -> Operator:
+    """A date/time feature of the prediction time.
+
+    Reads no source and takes no inputs, so it has no lineage and no state. ``timezone`` is
+    required: see :mod:`vifusion.temporal.calendar` for why inheriting the host's zone is
+    the defect this parameter exists to prevent.
+    """
+    return Operator(
+        name=field.value,
+        summary=summary,
+        arity=0,
+        reads_source=False,
+        input_types=(),
+        output_type="number",
+        unit_rule="dimensionless",
+        time_direction="known_future",
+        null_policy="propagate",
+        required_params=frozenset({"timezone"} | ({"calendar"} if field.needs_calendar else set())),
+        calendar_field=field,
+        batch_lowering="exact",
+    )
 
 
 def _aggregate_operator(
@@ -216,6 +243,19 @@ OPERATORS: dict[str, Operator] = {
         ),
         _aggregate_operator("min", Aggregate.MIN, "Minimum over the window."),
         _aggregate_operator("max", Aggregate.MAX, "Maximum over the window."),
+        _calendar_operator(CalendarField.HOUR_OF_DAY, "Hour of day in the declared timezone."),
+        _calendar_operator(CalendarField.DAY_OF_WEEK, "Day of week, Monday as zero."),
+        _calendar_operator(CalendarField.DAY_OF_MONTH, "Day of month."),
+        _calendar_operator(CalendarField.DAY_OF_YEAR, "Day of year."),
+        _calendar_operator(CalendarField.MONTH_OF_YEAR, "Month of year."),
+        _calendar_operator(CalendarField.IS_WEEKEND, "One on Saturday or Sunday, else zero."),
+        _calendar_operator(CalendarField.IS_HOLIDAY, "One when the date is in the calendar."),
+        _calendar_operator(
+            CalendarField.DAY_BEFORE_HOLIDAY, "One when tomorrow is in the calendar."
+        ),
+        _calendar_operator(
+            CalendarField.DAY_AFTER_HOLIDAY, "One when yesterday was in the calendar."
+        ),
         Operator(
             name="add",
             summary="Sum of two nodes. Units must be compatible.",

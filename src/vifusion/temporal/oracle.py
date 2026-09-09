@@ -28,6 +28,7 @@ import math
 from collections.abc import Sequence
 from datetime import datetime
 
+from vifusion.temporal import calendar
 from vifusion.temporal.boundaries import (
     in_trailing_window,
     is_label_usable,
@@ -37,6 +38,7 @@ from vifusion.temporal.boundaries import (
 from vifusion.temporal.records import CanonicalRecord, RecordKind
 from vifusion.temporal.specs import (
     Aggregate,
+    CalendarFeature,
     FeatureSpec,
     FeatureValue,
     FeatureVector,
@@ -120,6 +122,16 @@ def _value(
         value=value,
         lineage=tuple(sorted(record.record_id for record in contributors)),
         max_available_time=max(record.available_time for record in contributors),
+    )
+
+
+def _calendar(spec: CalendarFeature, prediction_time: datetime) -> FeatureValue:
+    """A pure function of the prediction time: no records, hence no lineage."""
+    return FeatureValue(
+        name=spec.name,
+        value=calendar.evaluate(
+            spec.field, prediction_time, spec.timezone, frozenset(spec.holidays)
+        ),
     )
 
 
@@ -240,6 +252,8 @@ def evaluate(
     prediction_time: datetime,
 ) -> FeatureValue:
     """Compute one feature by exhaustive re-filtering of the whole log."""
+    if isinstance(spec, CalendarFeature):
+        return _calendar(spec, prediction_time)
     if isinstance(spec, ForecastValue):
         return _forecast_value(spec, log, prediction_time)
 

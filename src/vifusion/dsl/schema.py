@@ -86,6 +86,15 @@ class SourceSchema(_Strict):
     max_input_rate_per_hour: Annotated[float, Field(gt=0)] | None = None
     """Required to derive a state bound; its absence is E-RESOURCE-001, not a default."""
 
+    max_forecast_horizon: str | None = None
+    """Furthest valid time a forecast from this source may describe, as a duration.
+
+    Required for forecast sources, for the same reason ``max_input_rate_per_hour`` is
+    required for windowed operators: the runtime retains one entry per future valid time it
+    has seen, so its state is a function of the horizon *and* the arrival rate, and neither
+    can be inferred. Declaring only the rate bounds how fast entries arrive but not how many
+    accumulate, which is how a program can measure past a bound the compiler believed."""
+
     description: str | None = None
     """Untrusted text from dataset documentation. See section 7.2 on prompt injection:
     containment is the output contract, not filtering, so this is carried but never
@@ -127,6 +136,15 @@ class FeatureProgram(_Strict):
     sources: list[SourceSchema]
     nodes: list[Node]
     outputs: list[str]
+
+    calendars: dict[str, list[str]] = Field(default_factory=dict)
+    """Named holiday calendars, as ISO dates.
+
+    Declared in the program rather than loaded from a file so that the dates hash into the
+    program identity: changing which days count as holidays changes the identity of every
+    run that used them, instead of silently altering a feature. The original system carried
+    a hardcoded list inside the node (see docs/original_system_audit.md).
+    """
 
     @field_validator("schema_version")
     @classmethod

@@ -54,6 +54,12 @@ jobs:
       - name: Tests
         run: uv run pytest
 
+      # Section 10.5: performance tests run separately from the fast suite and record
+      # hardware. They assert the state-bound invariant, not a throughput threshold - a
+      # threshold would encode one machine's speed and fail on a slower runner for no defect.
+      - name: Benchmarks
+        run: uv run pytest -m slow
+
       - name: Produce a versioned run manifest
         run: uv run vifusion run configs/synthetic_minimal.yaml --output artifacts/ci-run
 

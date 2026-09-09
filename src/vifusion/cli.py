@@ -56,6 +56,16 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     explain.add_argument("program", help="path to a YAML feature program")
     explain.add_argument("--records", required=True, help="path to a YAML record log")
+
+    bench = subcommands.add_parser(
+        "bench", help="measure throughput, latency percentiles and peak state for a program"
+    )
+    bench.add_argument("program", help="path to a YAML feature program")
+    bench.add_argument("--entities", type=int, default=1)
+    bench.add_argument("--hours", type=int, default=168, help="span of synthetic history")
+    bench.add_argument("--requests", type=int, default=100, help="requests per entity")
+    bench.add_argument("--seed", type=int, default=20260909)
+    bench.add_argument("--output", default=None, help="write the measurement here as JSON")
     return parser
 
 
@@ -190,6 +200,40 @@ def _explain(program_path: str, records_path: str) -> int:
     return EXIT_OK
 
 
+def _bench(args: argparse.Namespace) -> int:
+    """Measure a compiled program. Reports numbers; asserts nothing (section 10.5)."""
+    from vifusion.adapters.records_file import load_program
+    from vifusion.compiler.compile import compile_program, parse_program
+    from vifusion.runtime import benchmark
+
+    program, diagnostics = parse_program(load_program(Path(args.program)))
+    if program is None:
+        for diagnostic in diagnostics:
+            print(str(diagnostic), file=sys.stderr)
+        return EXIT_INVALID_PROGRAM
+    result = compile_program(program)
+    if not result.accepted or result.plan is None:
+        for diagnostic in result.diagnostics:
+            print(f"  {diagnostic}", file=sys.stderr)
+        return EXIT_INVALID_PROGRAM
+
+    measured = benchmark.run(
+        result.plan,
+        entities=args.entities,
+        hours=args.hours,
+        requests_per_entity=args.requests,
+        seed=args.seed,
+    )
+    print(benchmark.summarise(measured))
+    if args.output:
+        destination = Path(args.output)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(measured.as_dict(), indent=2, sort_keys=True) + "\n"
+        destination.write_text(payload, encoding="utf-8", newline="\n")
+        print(f"\nwritten            {destination}")
+    return EXIT_OK
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one command. Returns the process exit status rather than raising SystemExit."""
     configure_logging()
@@ -204,6 +248,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _compile(args.program, args.state_budget)
     if args.command == "explain":
         return _explain(args.program, args.records)
+    if args.command == "bench":
+        return _bench(args)
     return EXIT_USAGE
 
 

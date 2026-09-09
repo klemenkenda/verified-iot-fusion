@@ -26,8 +26,10 @@ is that one is chosen once and both implementations use it.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from enum import StrEnum
+
+from vifusion.temporal.calendar import CalendarField
 
 
 class Aggregate(StrEnum):
@@ -86,6 +88,15 @@ class FeatureSpec:
     @property
     def stream_key(self) -> tuple[str, str, str]:
         return (self.entity_id, self.source_id, self.feature_name)
+
+    @property
+    def reads_stream(self) -> bool:
+        """Whether this spec consults records at all.
+
+        A calendar feature does not: it is a pure function of the prediction time, so it
+        has no stream, no retained state, and no eligibility question to answer.
+        """
+        return True
 
     @property
     def lookback(self) -> timedelta | None:
@@ -172,6 +183,25 @@ class ForecastValue(FeatureSpec):
 
     lead: timedelta
     revision_policy: RevisionPolicy = RevisionPolicy.LATEST_ISSUE
+
+
+@dataclass(frozen=True, kw_only=True)
+class CalendarFeature(FeatureSpec):
+    """A date/time feature of the prediction time itself.
+
+    ``timezone`` is required rather than defaulted: see
+    :mod:`vifusion.temporal.calendar` for why inheriting the host's zone is the defect this
+    parameter exists to prevent. ``holidays`` is a tuple rather than a set so that the spec
+    stays hashable and hashes into the program identity.
+    """
+
+    field: CalendarField
+    timezone: str
+    holidays: tuple[date, ...] = ()
+
+    @property
+    def reads_stream(self) -> bool:
+        return False
 
 
 @dataclass(frozen=True)

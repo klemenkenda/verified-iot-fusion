@@ -413,3 +413,66 @@ freeze and expensive after it.
   `docs/risk_register.md` (R-03 status).
 - **Made before or after viewing test results:** not applicable
 - **Phase / gate:** Phase 0, frozen at Gate A
+
+### 2026-09-09 — Phase 4: the exponential moving average is a stated DSL limitation
+
+- **Decision:** `ema` is not in the operator registry, and will not be added as a recursive
+  accumulator. The expressible substitute is the trailing-window `mean`, which M2 uses.
+- **Rationale:** Three independent disqualifications, any one sufficient. A recursive EMA's
+  value depends on the *order* records are folded, not only on their content — so under the
+  out-of-order arrival this project exists to handle, it violates property 3 of section
+  10.2, which requires that reordering records without changing their availability ordering
+  leaves results unchanged. It has no bounded-state formulation that is also exact, which
+  section 5.3 requires. And it has no batch lowering provably equivalent to the streaming
+  accumulator, since its value at any prediction time depends on all prior records.
+- **Consequence:** Phase 4's acceptance criterion is met by the second branch — every
+  original feature group is expressible *except* this one, and it is documented as a stated
+  limitation rather than an omission. `docs/compatibility.md` section 2 carries the argument;
+  a test pins the decision so that adding `ema` fails until the argument is revisited.
+- **Phase / gate:** Phase 4
+
+### 2026-09-09 — Calendar features declare their timezone, and the tz database is pinned
+
+- **Decision:** Nine date/time operators, each requiring a `timezone` parameter; holidays come
+  from a calendar declared in the program; `tzdata` is a pinned dependency.
+- **Rationale:** The audit's finding 6 is that the original computed these from JavaScript
+  `Date` in the host process's local zone, with DST behaviour "never specified, tested, or
+  even mentioned in comments". A feature whose value depends on which machine computed it is
+  not reproducible. Requiring the parameter makes the silent-default failure unrepresentable;
+  pinning the IANA database prevents the same defect returning through the host OS, which on
+  Windows supplies no database at all. Declaring holidays in the program means they hash into
+  the program identity, so changing which days count as holidays changes the identity of every
+  run that used them.
+- **Not carried over:** the original's `attr == "random"` branch, which returned
+  `Math.random()` as a defined feature. A nondeterministic feature generator would break
+  Phase 1's determinism criterion.
+- **Phase / gate:** Phase 4
+
+### 2026-09-09 — Forecast state bounds require a declared horizon
+
+- **Decision:** Forecast sources must declare `max_forecast_horizon` alongside
+  `max_input_rate_per_hour`; the compiler derives the retained-entry bound from both.
+- **Rationale:** Found by the Phase 4 benchmark, not by a test written to look for it. The
+  compiler counted **one** retained record for a forecast stream, because the operator is not
+  windowed. The runtime keeps one entry per future valid time still reachable by a later
+  request, and the M2 benchmark measured **23**, putting peak state at 215 against a declared
+  bound of 195. The bound was wrong, not the engine. The same principle section 5.3 states for
+  windows applies here: state is a function of the horizon *and* the arrival rate, and neither
+  can be inferred, so the absence of a declaration is a diagnostic rather than a default.
+- **Why it matters beyond the bug:** the compiled bound is what H4 reports as the memory
+  claim, and section 14's risk row about silently evicted window state is the same failure
+  seen from the other side. Invariant 5 of section 10.2 exists to catch exactly this, and did.
+- **Affected experiments / artifacts:** `dsl/schema.py`, `compiler/compile.py`, both checked-in
+  programs; regression test `tests/integration/test_benchmark.py`.
+- **Phase / gate:** Phase 4
+
+### 2026-09-09 — Per-request timing is a volatile field of a replay result
+
+- **Decision:** `ReplayResult.deterministic_view()` excludes `request_durations_seconds`;
+  determinism is asserted through it.
+- **Rationale:** H4 needs latency percentiles, and a percentile derived from a total divided
+  by a count is not a percentile — so replay now measures each request. That measurement
+  describes the machine, not the computation, and comparing whole results made replay look
+  nondeterministic when only the clock had moved. The same distinction the run manifest draws
+  with its volatile fields, one level down.
+- **Phase / gate:** Phase 4

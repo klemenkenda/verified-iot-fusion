@@ -51,26 +51,26 @@ artifact produced.
 
 ## Status
 
-**Phase 3 complete** — the DSL, compiler, and runtime. A human-written feature program
-compiles, replays with verified lineage, and agrees between the streaming and batch paths
-within the declared per-operator tolerance. 427 tests; CI checks lint, types, and tests on
-Linux and Windows.
-
-Try the demonstration:
+**Phase 4 complete** — M2, the expert baseline after Kenda et al. 2019, is expressed in the
+DSL and benchmarked. 448 tests plus a separated performance suite; CI checks lint, types and
+tests on Linux and Windows.
 
 ```bash
-uv run vifusion compile configs/programs/synthetic_demo.yaml
+uv run vifusion compile configs/programs/m2_expert_baseline.yaml   # 31 features, cards
+uv run vifusion bench   configs/programs/m2_expert_baseline.yaml   # throughput, latency, state
 uv run vifusion explain configs/programs/synthetic_demo.yaml --records tests/fixtures/demo_records.yaml
 ```
 
-The record log contains an observation made *inside* the window but delivered two hours
-late, carrying an absurd value, and a better forecast issued after the prediction time.
-Both are withheld, and neither appears in any feature's lineage.
+The `explain` demonstration withholds an observation delivered two hours late and a forecast
+issued after the prediction time, and cites neither in any feature's lineage.
 
-Next is **Gate A** (section 15): the decision point on whether the correctness-and-benchmark
-paper is viable on the evidence so far, and — per
-[docs/execution_plan.md](docs/execution_plan.md) — the point at which the schedule is
-recalibrated from measured velocity rather than estimated.
+Every feature group of the original system is expressible except the exponential moving
+average, which is a stated limitation with an argument behind it — see
+[docs/compatibility.md](docs/compatibility.md).
+
+Next is **Gate A** (section 15): whether the correctness-and-benchmark paper is viable on the
+evidence so far, and the point at which
+[the schedule is recalibrated](docs/execution_plan.md) from measured velocity.
 
 ## Naming
 

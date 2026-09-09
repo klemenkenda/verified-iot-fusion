@@ -1,0 +1,222 @@
+# M2 — the expert baseline, after Kenda et al. 2019.
+#
+# Phase 4 of docs/research_plan.md asks for the original paper's measurement, autoregressive,
+# date/time, and weather feature groups expressed in the DSL. This is that program. It is
+# written at the level of the *feature program*, not the runtime: the original's three
+# conceptual stages appear here as three tiers of nodes rather than as three components.
+#
+#   preprocessing   leaf nodes reading one stream each  (temp_now .. fc_temp_24h)
+#   partial fusion  combinations within one source      (temp_anomaly, temp_range)
+#   full fusion     combinations across sources         (fc_temp_bias_1h, fc_temp_bias_24h)
+#
+# What is deliberately NOT reproduced, and why, is recorded in docs/compatibility.md. The
+# short version: the original's alignment, late-data, and window-boundary behaviour is
+# either silently approximate or delegated to an unverified native dependency
+# (docs/original_system_audit.md), so this program reproduces the original's *feature
+# vocabulary* — which encodes real domain knowledge — and not its temporal machinery.
+#
+# M2 must be a credible baseline, not a straw man: Gate B turns on whether beating it would
+# mean anything, and docs/novelty.md records that OCTree's published Enefit gain over
+# XGBoost is 2.3%, so a weak M2 would make H1 unfalsifiable rather than easy.
+schema_version: "0.1.0"
+name: m2_expert_baseline
+
+sources:
+  - source_id: station
+    feature_name: temp
+    kind: measurement
+    value_type: number
+    unit: kelvin
+    max_input_rate_per_hour: 1
+    description: Air temperature, hourly. The original assumed hourly granularity throughout.
+
+  - source_id: station
+    feature_name: load
+    kind: measurement
+    value_type: number
+    unit: kilowatt
+    max_input_rate_per_hour: 1
+    description: Measured electrical load, the prediction target's own history.
+
+  - source_id: nwp
+    feature_name: temp_fc
+    kind: forecast
+    value_type: number
+    unit: kelvin
+    max_input_rate_per_hour: 1
+    max_forecast_horizon: 48h
+    description: >-
+      Numerical weather prediction for air temperature. The original flattened a 48-hour
+      payload into temperature0..47 at ingestion; here the horizon is a lead parameter
+      resolved against valid_time, so revisions are selected by issue time rather than
+      overwritten in place.
+
+# Holidays are declared here so that they hash into the program identity. The original
+# carried a hardcoded list inside the node. These are Slovenian public holidays for 2024;
+# they are illustrative, and Phase 5 replaces them with the calendar the dataset requires.
+calendars:
+  si_2024:
+    - "2024-01-01"
+    - "2024-01-02"
+    - "2024-02-08"
+    - "2024-04-01"
+    - "2024-04-27"
+    - "2024-05-01"
+    - "2024-05-02"
+    - "2024-06-25"
+    - "2024-08-15"
+    - "2024-10-31"
+    - "2024-11-01"
+    - "2024-12-25"
+    - "2024-12-26"
+
+nodes:
+  # ---- preprocessing: measurement group -------------------------------------------------
+  # The original's per-node QMiner aggregates: tick, winbuf, ma, variance, min, max.
+  # Its EMA has no counterpart here; see docs/compatibility.md for why it is inexpressible
+  # rather than merely unimplemented.
+  - id: temp_now
+    op: last
+    params: {source: station, feature: temp, max_staleness: 3h}
+  - id: temp_mean_24h
+    op: mean
+    params: {source: station, feature: temp, window: 24h}
+  - id: temp_var_24h
+    op: variance
+    params: {source: station, feature: temp, window: 24h}
+  - id: temp_min_24h
+    op: min
+    params: {source: station, feature: temp, window: 24h}
+  - id: temp_max_24h
+    op: max
+    params: {source: station, feature: temp, window: 24h}
+
+  - id: load_now
+    op: last
+    params: {source: station, feature: load, max_staleness: 3h}
+  - id: load_mean_24h
+    op: mean
+    params: {source: station, feature: load, window: 24h}
+
+  # Data-quality indicators. The original had no equivalent: a gap silently misaligned every
+  # subsequent vector instead of being reported (audit, finding 2).
+  - id: temp_age
+    op: staleness
+    params: {source: station, feature: temp}
+  - id: load_gaps_24h
+    op: missing_count
+    params: {source: station, feature: load, window: 24h, expected_interval: 1h}
+
+  # ---- preprocessing: autoregressive group ----------------------------------------------
+  # The original's negative buffer offsets, as exact event-time lags.
+  - id: load_lag_1h
+    op: lag
+    params: {source: station, feature: load, lag: 1h}
+  - id: load_lag_24h
+    op: lag
+    params: {source: station, feature: load, lag: 24h}
+  - id: load_lag_168h
+    op: lag
+    params: {source: station, feature: load, lag: 168h}
+  - id: temp_lag_24h
+    op: lag
+    params: {source: station, feature: temp, lag: 24h}
+
+  # ---- preprocessing: date/time group ---------------------------------------------------
+  # streamingStaticNode and staticCalculatedNode, minus the `random` branch, and with the
+  # timezone declared rather than inherited from the host process.
+  - id: hour_of_day
+    op: hour_of_day
+    params: {timezone: Europe/Ljubljana}
+  - id: day_of_week
+    op: day_of_week
+    params: {timezone: Europe/Ljubljana}
+  - id: day_of_month
+    op: day_of_month
+    params: {timezone: Europe/Ljubljana}
+  - id: day_of_year
+    op: day_of_year
+    params: {timezone: Europe/Ljubljana}
+  - id: month_of_year
+    op: month_of_year
+    params: {timezone: Europe/Ljubljana}
+  - id: is_weekend
+    op: is_weekend
+    params: {timezone: Europe/Ljubljana}
+  - id: is_holiday
+    op: is_holiday
+    params: {timezone: Europe/Ljubljana, calendar: si_2024}
+  - id: day_before_holiday
+    op: day_before_holiday
+    params: {timezone: Europe/Ljubljana, calendar: si_2024}
+  - id: day_after_holiday
+    op: day_after_holiday
+    params: {timezone: Europe/Ljubljana, calendar: si_2024}
+
+  # ---- preprocessing: weather group -----------------------------------------------------
+  # The original's temperature0..47 fields, as leads against valid_time.
+  - id: fc_temp_1h
+    op: forecast
+    params: {source: nwp, feature: temp_fc, lead: 1h}
+  - id: fc_temp_6h
+    op: forecast
+    params: {source: nwp, feature: temp_fc, lead: 6h}
+  - id: fc_temp_24h
+    op: forecast
+    params: {source: nwp, feature: temp_fc, lead: 24h}
+
+  # ---- partial fusion: within one source ------------------------------------------------
+  - id: temp_anomaly
+    op: subtract
+    inputs: [temp_now, temp_mean_24h]
+  - id: temp_range_24h
+    op: subtract
+    inputs: [temp_max_24h, temp_min_24h]
+  - id: load_anomaly
+    op: subtract
+    inputs: [load_now, load_mean_24h]
+  - id: load_change_24h
+    op: subtract
+    inputs: [load_now, load_lag_24h]
+
+  # ---- full fusion: across sources ------------------------------------------------------
+  # Forecast against observation: the disagreement the fused pipeline exists to exploit.
+  - id: fc_temp_bias_1h
+    op: subtract
+    inputs: [fc_temp_1h, temp_now]
+  - id: fc_temp_bias_24h
+    op: subtract
+    inputs: [fc_temp_24h, temp_now]
+
+outputs:
+  - temp_now
+  - temp_mean_24h
+  - temp_var_24h
+  - temp_min_24h
+  - temp_max_24h
+  - load_now
+  - load_mean_24h
+  - temp_age
+  - load_gaps_24h
+  - load_lag_1h
+  - load_lag_24h
+  - load_lag_168h
+  - temp_lag_24h
+  - hour_of_day
+  - day_of_week
+  - day_of_month
+  - day_of_year
+  - month_of_year
+  - is_weekend
+  - is_holiday
+  - day_before_holiday
+  - day_after_holiday
+  - fc_temp_1h
+  - fc_temp_6h
+  - fc_temp_24h
+  - temp_anomaly
+  - temp_range_24h
+  - load_anomaly
+  - load_change_24h
+  - fc_temp_bias_1h
+  - fc_temp_bias_24h

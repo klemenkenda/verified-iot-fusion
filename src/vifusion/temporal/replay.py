@@ -22,6 +22,7 @@ same reveal delay as learning is.
 from __future__ import annotations
 
 import heapq
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -66,6 +67,26 @@ class ReplayResult:
 
     peak_state_records: int = 0
     """Measured high-water mark of retained records, for invariant 5 of section 10.2."""
+
+    request_durations_seconds: tuple[float, ...] = ()
+    """Wall time to serve each request, parallel to :attr:`vectors`.
+
+    H4 reports latency percentiles, and a percentile computed from a total divided by a
+    count is not a percentile. Measuring per request costs one clock read each and is the
+    only way to report the distribution the hypothesis asks for.
+    """
+
+    def deterministic_view(
+        self,
+    ) -> tuple[tuple[FeatureVector, ...], tuple[tuple[str, ...], ...], tuple[str, ...], int]:
+        """Everything two identical replays must reproduce exactly.
+
+        :attr:`request_durations_seconds` is excluded: it measures the machine, not the
+        computation, and comparing it would make replay look nondeterministic when only the
+        clock moved. This mirrors the volatile-field declaration the run manifest carries —
+        the same distinction, at a different level.
+        """
+        return (self.vectors, self.usable_labels, self.revealed_labels, self.peak_state_records)
 
     def vector_at(self, prediction_time: datetime) -> FeatureVector:
         for vector in self.vectors:
@@ -123,12 +144,16 @@ def replay(
     vectors: list[FeatureVector] = []
     usable_labels: list[tuple[str, ...]] = []
     revealed: list[str] = []
+    durations: list[float] = []
 
     while queue:
         (_, _, _), payload_index = heapq.heappop(queue)
         payload = payloads[payload_index]
         if isinstance(payload, PredictionRequest):
-            vectors.append(engine.evaluate(payload.entity_id, payload.prediction_time))
+            started = time.perf_counter()
+            vector = engine.evaluate(payload.entity_id, payload.prediction_time)
+            durations.append(time.perf_counter() - started)
+            vectors.append(vector)
             usable_labels.append(tuple(revealed))
             continue
         if payload.kind is RecordKind.LABEL:
@@ -140,4 +165,5 @@ def replay(
         usable_labels=tuple(usable_labels),
         revealed_labels=tuple(revealed),
         peak_state_records=engine.peak_state_records,
+        request_durations_seconds=tuple(durations),
     )

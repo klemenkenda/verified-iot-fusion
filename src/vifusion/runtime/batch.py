@@ -30,11 +30,13 @@ from datetime import datetime
 
 from vifusion.compiler.compile import ExecutionPlan
 from vifusion.runtime.arithmetic import combine
+from vifusion.temporal import calendar
 from vifusion.temporal.boundaries import in_trailing_window, within_staleness
 from vifusion.temporal.records import CanonicalRecord, RecordKind
 from vifusion.temporal.replay import PredictionRequest
 from vifusion.temporal.specs import (
     Aggregate,
+    CalendarFeature,
     FeatureSpec,
     FeatureValue,
     FeatureVector,
@@ -64,6 +66,15 @@ BATCH_LOWERINGS = frozenset(
         "subtract",
         "multiply",
         "divide",
+        "hour_of_day",
+        "day_of_week",
+        "day_of_month",
+        "day_of_year",
+        "month_of_year",
+        "is_weekend",
+        "is_holiday",
+        "day_before_holiday",
+        "day_after_holiday",
     }
 )
 
@@ -149,6 +160,14 @@ def _evaluate_leaf(
     index: dict[tuple[str, str, str], _Stream],
     prediction_time: datetime,
 ) -> FeatureValue:
+    if isinstance(spec, CalendarFeature):
+        return FeatureValue(
+            name=spec.name,
+            value=calendar.evaluate(
+                spec.field, prediction_time, spec.timezone, frozenset(spec.holidays)
+            ),
+        )
+
     stream = index.get(spec.stream_key)
     eligible = stream.eligible(prediction_time) if stream is not None else ()
 

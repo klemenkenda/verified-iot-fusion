@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any, Literal
 
 import pint
@@ -48,7 +48,9 @@ from vifusion.dsl.schema import (
     parse_duration,
 )
 from vifusion.hashing import hash_object
+from vifusion.temporal.calendar import TimezoneError, resolve_timezone
 from vifusion.temporal.specs import (
+    CalendarFeature,
     FeatureSpec,
     ForecastValue,
     Lag,
@@ -331,6 +333,40 @@ def _state_records(
     return math.ceil(hours * source.max_input_rate_per_hour) + 1
 
 
+def _forecast_state_records(source: SourceSchema, node: Node, compilation: _Compilation) -> int:
+    """Bound the entries a forecast selector retains.
+
+    The runtime keeps the best eligible issue per *valid time* still reachable by a future
+    request, so the count is bounded by how far ahead the source forecasts and how often it
+    issues — not by one, which is what an earlier version of this compiler assumed. The
+    Phase 4 benchmark measured 23 retained entries against a declared bound of 1, which is
+    how the assumption was found; invariant 5 of section 10.2 exists to catch exactly this.
+    """
+    if source.max_input_rate_per_hour is None or source.max_forecast_horizon is None:
+        compilation.reject(
+            Code.STATE_UNBOUNDABLE,
+            node.id,
+            f"forecast source {source.source_id}/{source.feature_name} must declare both "
+            "max_input_rate_per_hour and max_forecast_horizon; the runtime retains one "
+            "entry per future valid time, so neither alone bounds its state",
+        )
+        return 0
+    try:
+        horizon = parse_duration(source.max_forecast_horizon)
+    except DslError as error:
+        compilation.reject(Code.SCHEMA_INVALID, node.id, str(error))
+        return 0
+    if horizon <= timedelta(0):
+        compilation.reject(
+            Code.WINDOW_NOT_POSITIVE,
+            node.id,
+            f"max_forecast_horizon must be positive, got {horizon}",
+        )
+        return 0
+    hours = horizon.total_seconds() / 3600
+    return math.ceil(hours * source.max_input_rate_per_hour) + 1
+
+
 def _compile_source_node(
     node: Node, operator: registry.Operator, compilation: _Compilation
 ) -> None:
@@ -414,8 +450,10 @@ def _compile_source_node(
         unit=node_unit,
         spec=spec,
         lookback=lookback,
-        state_records=_state_records(
-            lookback if operator.windowed else None, source, node, compilation
+        state_records=(
+            _forecast_state_records(source, node, compilation)
+            if operator.time_direction == "known_future"
+            else _state_records(lookback if operator.windowed else None, source, node, compilation)
         ),
         batch_eligible=operator.batch_lowering is not None,
         parity_tolerance_ulps=operator.parity_tolerance_ulps,
@@ -519,6 +557,82 @@ def _lower_source_node(
 
     compilation.reject(Code.UNKNOWN_OPERATOR, node.id, f"operator {node.op!r} has no lowering")
     return None, None
+
+
+def _compile_calendar_node(
+    node: Node, operator: registry.Operator, compilation: _Compilation
+) -> None:
+    """Stages 2, 4 and 5 for a date/time node.
+
+    A calendar feature reads no records, so it has no lineage, no eligibility question, and
+    no retained state. What it does have is two declarations that must resolve — a timezone
+    and, for holiday fields, a named calendar — and both are checked here rather than at
+    execution, so that an unknown zone is a compile-time diagnostic the proposer can repair
+    instead of a runtime failure mid-experiment.
+    """
+    assert operator.calendar_field is not None
+    timezone = node.params.get("timezone")
+    if not isinstance(timezone, str):
+        compilation.reject(
+            Code.MISSING_PARAMETER,
+            node.id,
+            f"operator {node.op!r} requires a 'timezone'; the original system inherited the "
+            "host's local zone, which made its date features unreproducible",
+        )
+        return
+    try:
+        resolve_timezone(timezone)
+    except TimezoneError as error:
+        compilation.reject(Code.UNKNOWN_TIMEZONE, node.id, str(error))
+        return
+
+    holidays: tuple[date, ...] = ()
+    if operator.calendar_field.needs_calendar:
+        name = node.params.get("calendar")
+        if not isinstance(name, str):
+            compilation.reject(
+                Code.MISSING_PARAMETER,
+                node.id,
+                f"operator {node.op!r} requires a 'calendar' naming a declared holiday list",
+            )
+            return
+        declared = compilation.program.calendars.get(name)
+        if declared is None:
+            compilation.reject(
+                Code.UNKNOWN_CALENDAR,
+                node.id,
+                f"calendar {name!r} is not declared; known calendars: "
+                f"{sorted(compilation.program.calendars)}",
+            )
+            return
+        try:
+            holidays = tuple(date.fromisoformat(entry) for entry in declared)
+        except ValueError as error:
+            compilation.reject(
+                Code.SCHEMA_INVALID, node.id, f"calendar {name!r} holds a bad date: {error}"
+            )
+            return
+
+    compilation.plans[node.id] = NodePlan(
+        node_id=node.id,
+        op=node.op,
+        inputs=(),
+        value_type="number",
+        unit=DIMENSIONLESS,
+        spec=CalendarFeature(
+            name=node.id,
+            entity_id="",
+            source_id="",
+            feature_name="",
+            field=operator.calendar_field,
+            timezone=timezone,
+            holidays=holidays,
+        ),
+        lookback=None,
+        state_records=0,
+        batch_eligible=operator.batch_lowering is not None,
+        parity_tolerance_ulps=0,
+    )
 
 
 def _compile_arithmetic_node(
@@ -657,6 +771,8 @@ def compile_program(
         assert compiled_operator is not None
         if compiled_operator.reads_source:
             _compile_source_node(compiled_node, compiled_operator, compilation)
+        elif compiled_operator.calendar_field is not None:
+            _compile_calendar_node(compiled_node, compiled_operator, compilation)
         else:
             _compile_arithmetic_node(compiled_node, compiled_operator, compilation)
 
