@@ -198,3 +198,25 @@ recorded here, including whether it was made before or after viewing test result
   oracle scenario selection and the Phase 6 M2 baseline feature set.
 - **Made before or after viewing test results:** not applicable
 - **Phase / gate:** Phase 0
+
+### 2026-09-09 — Problem statement written as its own artifact, with explicit refutation conditions
+
+- **Decision:** The Phase 0 one-page problem statement lives in
+  [`docs/problem_statement.md`](problem_statement.md), a file the research plan's Phase 0
+  artifact list does not name. It states the central claim as a correctness half and a
+  utility half with **two independent refutation conditions**, rather than as a single
+  narrative claim.
+- **Alternatives considered:** Folding the one-pager into `docs/novelty.md`, whose three
+  headings (central claim / intended novelty / out of scope) overlap it substantially.
+- **Rationale:** The two documents answer different questions and are read by different
+  people at different times — the problem statement says what is being claimed and what
+  would falsify it, and can be written now; the novelty memo says what separates the claim
+  from each cluster of prior work, and cannot be written before the literature matrix
+  exists. Keeping them separate means the matrix blocks only one of them. Splitting the
+  refutation conditions is what makes the Phase 0 exit criterion ("one falsifiable central
+  claim") actually checkable, and it records *before* any results exist that refuting the
+  utility half leaves the correctness contribution — the Gate D alternative paper — intact.
+- **Affected experiments / artifacts:** `docs/problem_statement.md`; freezes at Gate A
+  alongside `docs/novelty.md`.
+- **Made before or after viewing test results:** not applicable
+- **Phase / gate:** Phase 0, frozen at Gate A
