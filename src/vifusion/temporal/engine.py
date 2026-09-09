@@ -16,6 +16,16 @@ and silently evicting under pressure produces wrong features that pass every cor
 test in section 10 — the failure mode the section 14 risk table calls out by name. The
 runtime therefore refuses to continue rather than quietly dropping data.
 
+**Redelivery is a no-op, and the identifiers this costs are declared.** Section 10.5 requires
+idempotent handling of duplicate message identifiers, and deciding whether a record has been
+seen before is not possible without remembering that it was. The engine therefore keeps one
+content signature per admitted identifier. That memory grows with the number of distinct
+records, not with the retained window, so it sits *outside* the compiler's state bound and
+outside :attr:`FeatureEngine.peak_state_records`, which count retained records only. A
+deployment that must bound it would deduplicate within a declared horizon and accept a
+double count beyond it; this artifact keeps the exact rule instead, because a replay whose
+correctness depended on how long ago a duplicate arrived would not be replay.
+
 The arithmetic here differs from the oracle's on purpose: a one-pass Welford update against
 the oracle's two-pass sum. They agree to within the declared parity tolerance, and the
 difference is what keeps the two implementations from sharing a mistake.
@@ -29,7 +39,13 @@ from datetime import datetime, timedelta
 
 from vifusion.temporal import calendar
 from vifusion.temporal.boundaries import in_trailing_window, within_staleness
-from vifusion.temporal.records import CanonicalRecord, RecordKind
+from vifusion.temporal.records import (
+    CanonicalRecord,
+    ContentSignature,
+    DuplicateRecordError,
+    RecordKind,
+    content_signature,
+)
 from vifusion.temporal.specs import (
     Aggregate,
     CalendarFeature,
@@ -191,6 +207,12 @@ class FeatureEngine:
         self.specs = tuple(specs)
         self._streams: dict[StreamKey, StreamState] = {}
         self._forecasts: dict[StreamKey, ForecastState] = {}
+        self._admitted: dict[str, ContentSignature] = {}
+        """Content signature of every identifier admitted, for the idempotence rule.
+
+        Not part of the retained-record state: see the module docstring for why it is
+        unbounded and why bounding it would make replay depend on wall-clock history."""
+
         self.peak_state_records = 0
         """High-water mark of retained records, measured after each prune.
 
@@ -222,16 +244,42 @@ class FeatureEngine:
                     state_bound=state_bound,
                 )
 
-    def observe(self, record: CanonicalRecord) -> None:
-        """Admit a record the clock has released. Never called with a future record."""
+    def observe(self, record: CanonicalRecord) -> bool:
+        """Admit a record the clock has released. Never called with a future record.
+
+        Returns ``False`` when the record is a redelivery of one already admitted, so the
+        caller can treat the second delivery as the no-op section 10.5 requires. The check
+        is by identifier and content: an identifier that names two different records is a
+        broken identity rather than a retry, and is refused here as it is in
+        :func:`vifusion.temporal.records.deduplicate`.
+
+        A redelivery arriving with a later ``available_time`` than the original is still
+        discarded. The first arrival is when the information genuinely became available, and
+        admitting the retry instead would move the ``max_available_time`` a lineage reports
+        while leaving its value unchanged — a divergence from the batch path, which sorts by
+        availability and keeps the earliest.
+        """
+        signature = content_signature(record)
+        previous = self._admitted.get(record.record_id)
+        if previous is not None:
+            if previous != signature:
+                raise DuplicateRecordError(
+                    f"record id {record.record_id!r} names two different records; a message "
+                    "identifier must identify a message, and no rule can decide which of "
+                    "the two the source meant"
+                )
+            return False
+        self._admitted[record.record_id] = signature
+
         if record.kind is RecordKind.FORECAST:
             forecasts = self._forecasts.get(record.stream_key)
             if forecasts is not None:
                 forecasts.observe(record)
-            return
+            return True
         stream = self._streams.get(record.stream_key)
         if stream is not None:
             stream.observe(record)
+        return True
 
     def evaluate(self, entity_id: str, prediction_time: datetime) -> FeatureVector:
         """Compute every spec for one entity from retained state alone."""

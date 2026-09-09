@@ -35,7 +35,7 @@ from vifusion.temporal.boundaries import (
     is_visible,
     within_staleness,
 )
-from vifusion.temporal.records import CanonicalRecord, RecordKind
+from vifusion.temporal.records import CanonicalRecord, RecordKind, deduplicate
 from vifusion.temporal.specs import (
     Aggregate,
     CalendarFeature,
@@ -251,9 +251,16 @@ def evaluate(
     spec: FeatureSpec,
     prediction_time: datetime,
 ) -> FeatureValue:
-    """Compute one feature by exhaustive re-filtering of the whole log."""
+    """Compute one feature by exhaustive re-filtering of the whole log.
+
+    Redeliveries are collapsed first, by the same rule the engine applies incrementally.
+    Deduplication is a semantic decision about record identity, like inclusivity and
+    tie-breaking, so it is decided in one place and shared rather than reimplemented here —
+    what must stay independent is the *mechanism* of eligibility, which it does.
+    """
     if isinstance(spec, CalendarFeature):
         return _calendar(spec, prediction_time)
+    log = deduplicate(log)
     if isinstance(spec, ForecastValue):
         return _forecast_value(spec, log, prediction_time)
 
@@ -293,7 +300,7 @@ def usable_labels(
     return sorted(
         (
             record
-            for record in log
+            for record in deduplicate(log)
             if record.kind is RecordKind.LABEL and is_label_usable(record.available_time, now)
         ),
         key=_selection_key,

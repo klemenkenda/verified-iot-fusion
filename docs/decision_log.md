@@ -584,3 +584,76 @@ freeze and expensive after it.
   R-02).
 - **Made before or after viewing test results:** not applicable
 - **Phase / gate:** Gate A; revisited after Phase 5
+
+### 2026-09-09 — Redelivery under one identifier is a no-op; a contradiction under one identifier is an error
+
+- **Decision:** `record_id` is a message identity. A second delivery whose content matches the
+  first is discarded, and the **earliest** arrival is the one kept; a second delivery whose
+  content differs raises `DuplicateRecordError`. Content is everything the record says except
+  `available_time` and `provenance`, which describe the delivery rather than the message.
+  The rule lives in one place, `vifusion.temporal.records.deduplicate`, and every path applies
+  it: the engine incrementally, the oracle and the batch index over the whole log.
+- **Rationale:** Found by auditing Phase 2 against section 10.5, which requires idempotent
+  handling of duplicate message identifiers. Two records sharing `record_id='m1'` produced
+  `count = 2.0` with lineage `('m1', 'm1')`. That is the worst shape a defect can take here:
+  every aggregate over the duplicated reading moves, while the lineage a reviewer would audit
+  still names one record, because lineage is a *set* of identifiers. No assertion about
+  lineage — and there are many — could have caught it.
+- **Why the earliest arrival wins:** a retry cannot make information less available than it
+  already was, and taking the earliest is the only rule independent of the order the log was
+  assembled in, which invariant 3 of section 10.2 requires. It also keeps the streaming path
+  (which admits the first delivery the clock releases) and the batch path (which sorts by
+  availability and takes the prefix) agreeing on `max_available_time`, not merely on values.
+- **Why a conflict raises rather than resolving:** if one identifier names two different
+  messages, the identity assumption that makes deduplication meaningful is already broken, and
+  any silent resolution picks a value on the source's behalf. A genuine correction has a
+  mechanism already — a new record with a `revision_id`.
+- **Declared cost:** deciding whether a record has been seen before is not possible without
+  remembering that it was, so `FeatureEngine` keeps one content signature per admitted
+  identifier. That memory grows with distinct records rather than with the retained window, so
+  it sits outside the compiler's state bound and outside `peak_state_records`, and this is
+  stated in the engine's module docstring rather than left for a reader to discover. A
+  deployment that must bound it would deduplicate within a horizon and accept a double count
+  beyond it; that is rejected here, because a replay whose correctness depended on how long ago
+  a duplicate arrived would not be replay.
+- **Regression tests:** four named scenarios in `tests/fixtures/scenarios/out_of_order.yaml`
+  (measurement, window mean, label reveal, forecast issue), the record-level unit tests in
+  `tests/unit/test_records.py`, and two Hypothesis properties —
+  `test_redelivering_records_changes_nothing` and
+  `test_a_redelivery_that_contradicts_itself_is_refused`.
+- **Phase / gate:** Phase 2, closed during the Phase 4–5 audit
+
+### 2026-09-09 — Section 10.2 invariant coverage is an executed cross-reference, not a comment
+
+- **Decision:** `INVARIANT_COVERAGE` in `tests/property/test_temporal_invariants.py` maps each
+  of the seven invariants of section 10.2 to the test that proves it, and
+  `test_every_section_10_2_invariant_has_a_named_test` imports each module and asserts the
+  named test still exists. Invariant 6 gained a real property suite,
+  `tests/property/test_unit_preservation.py`, which generates operator/unit pairings rather
+  than tabulating the units someone thought to write down.
+- **Rationale:** Two tests in that file were skipped with the reason "requires the Phase 3
+  compiler" — and stayed skipped, and stayed wrong, after Phase 3 shipped both the batch
+  lowering and the unit checker. Both invariants were in fact proven elsewhere, so the file
+  that enumerates section 10.2 understated the evidence for a whole phase. A prose pointer to
+  another suite rots invisibly, because the reference still reads correctly after the thing it
+  names is renamed; an executed one fails.
+- **Phase / gate:** Phase 2–3, closed during the Phase 4–5 audit
+
+### 2026-09-09 — Availability models and late-data policies are carried to Phase 5 with their consumer
+
+- **Decision:** Two Phase 2 tasks are reopened rather than quietly counted as done.
+  `src/vifusion/temporal/availability.py` implements both availability models and is imported
+  by nothing; `src/vifusion/temporal/late_data.py` is imported only by its own test. Both are
+  wired in Phase 5, where the dataset adapters give them a consumer, and the Phase 2 checklist
+  in `docs/research_plan.md` now says so.
+- **Rationale:** The code was written ahead of the component that would use it, which is a
+  reasonable order to build in and a misleading one to report. Section 5.1 requires that an
+  adapter with no recorded availability *label its model as simulated and store its
+  parameters*; that enforcement point cannot exist while no adapter routes through it, so
+  ticking the box would claim an invariant the artifact does not hold. The same is true of
+  "use immutable prior predictions for primary evaluation": with no evaluation path, it is
+  satisfied vacuously.
+- **Consequence for Gate A:** neither gap affects the H2 evidence, which rests on the replay
+  clock, the oracle, and the verifier corpus. They affect Phase 5's claim that every normalized
+  record has a documented derivation for `available_time`.
+- **Phase / gate:** Phase 2 tasks, carried to Phase 5

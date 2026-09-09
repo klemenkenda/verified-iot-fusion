@@ -14,6 +14,7 @@ import pytest
 from tests.scenarios import Scenario, load_scenarios
 from vifusion.temporal import oracle
 from vifusion.temporal.boundaries import is_visible
+from vifusion.temporal.records import deduplicate
 
 SCENARIOS = load_scenarios()
 
@@ -43,10 +44,12 @@ def test_declared_eligibility_holds(scenario: Scenario) -> None:
     """The eligibility rule of section 5.2, independent of any feature."""
     if scenario.expected_eligible is None:
         pytest.skip("scenario declares no eligibility expectation")
+    # Over the deduplicated log: eligibility is a set of identifiers, and a redelivery
+    # under one identifier is one record (section 10.5).
     eligible = tuple(
         sorted(
             record.record_id
-            for record in scenario.records
+            for record in deduplicate(scenario.records)
             if is_visible(record.available_time, scenario.prediction_time)
         )
     )
@@ -97,7 +100,7 @@ def test_lineage_never_names_an_ineligible_record(scenario: Scenario) -> None:
     vector = oracle.evaluate_vector(
         scenario.records, scenario.specs, scenario.entity_id, scenario.prediction_time
     )
-    by_id = {record.record_id: record for record in scenario.records}
+    by_id = {record.record_id: record for record in deduplicate(scenario.records)}
     for value in vector.values:
         for record_id in value.lineage:
             record = by_id[record_id]

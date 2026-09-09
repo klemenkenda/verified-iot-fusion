@@ -156,9 +156,11 @@ def replay(
             vectors.append(vector)
             usable_labels.append(tuple(revealed))
             continue
-        if payload.kind is RecordKind.LABEL:
+        admitted = engine.observe(payload)
+        if admitted and payload.kind is RecordKind.LABEL:
+            # A redelivered label is one reveal, not two: the engine reports whether this
+            # delivery was the first, and only the first is a reveal (section 10.5).
             revealed.append(payload.record_id)
-        engine.observe(payload)
 
     return ReplayResult(
         vectors=tuple(vectors),

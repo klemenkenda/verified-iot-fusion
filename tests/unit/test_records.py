@@ -8,7 +8,14 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from vifusion.temporal.records import CanonicalRecord, RecordError, RecordKind
+from vifusion.temporal.records import (
+    CanonicalRecord,
+    DuplicateRecordError,
+    RecordError,
+    RecordKind,
+    content_signature,
+    deduplicate,
+)
 
 T = datetime(2024, 1, 1, tzinfo=UTC)
 HOUR = timedelta(hours=1)
@@ -114,3 +121,47 @@ def test_stream_key_identifies_entity_source_and_feature() -> None:
 def test_unknown_fields_are_rejected() -> None:
     with pytest.raises(ValidationError):
         _measurement(sensor_id="oops")
+
+
+def test_a_redelivery_under_the_same_id_collapses_to_one_record() -> None:
+    """Section 10.5: duplicate message identifiers are handled idempotently."""
+    first = _measurement(available_time=T)
+    retry = _measurement(available_time=T + 2 * HOUR)
+    assert deduplicate([first, retry]) == [first]
+
+
+def test_the_earliest_arrival_wins() -> None:
+    """A retry cannot make information less available than it already was."""
+    late = _measurement(available_time=T + 2 * HOUR)
+    early = _measurement(available_time=T)
+    assert deduplicate([late, early])[0].available_time == T
+
+
+def test_deduplication_does_not_depend_on_the_order_of_the_log() -> None:
+    """Invariant 3 of section 10.2 reaches this rule too."""
+    first = _measurement(available_time=T)
+    retry = _measurement(available_time=T + HOUR)
+    other = _measurement(record_id="m2", available_time=T)
+    assert deduplicate([first, retry, other]) == deduplicate([other, retry, first])
+
+
+def test_a_conflicting_redelivery_is_refused_rather_than_resolved() -> None:
+    """One identifier naming two different records is a broken identity, not a retry."""
+    with pytest.raises(DuplicateRecordError, match="two different records"):
+        deduplicate([_measurement(value=1.0), _measurement(value=2.0)])
+
+
+def test_the_signature_ignores_arrival_time_and_provenance() -> None:
+    """A broker stamps its retry with a fresh arrival time and its own metadata.
+
+    Including either in the identity would make the case deduplication exists to handle
+    look like the conflict it refuses.
+    """
+    assert content_signature(_measurement(available_time=T)) == content_signature(
+        _measurement(available_time=T + HOUR, provenance={"delivery": "retry"})
+    )
+
+
+def test_the_signature_distinguishes_a_revision_from_a_redelivery() -> None:
+    """A corrected value under the same identifier is the conflict, not a retry."""
+    assert content_signature(_measurement(value=1.0)) != content_signature(_measurement(value=1.5))

@@ -1,9 +1,12 @@
 """Property-based invariants from section 10.2.
 
-Hypothesis generates arrival histories; each test asserts one numbered invariant. Where an
-invariant belongs to a later phase — batch/stream parity and unit preservation both require
-the Phase 3 compiler — it is named and skipped rather than silently omitted, so the gap
-between what the plan requires and what is proven stays visible.
+Hypothesis generates arrival histories; each test asserts one numbered invariant. Three of
+the seven are proven elsewhere, because they are properties of the compiler and of the batch
+lowering rather than of the replay clock: :data:`INVARIANT_COVERAGE` says where each one
+lives and :func:`test_every_section_10_2_invariant_has_a_named_test` checks that the pointer
+still resolves. That map replaced two skipped placeholders that outlived their reason — they
+still said "requires the Phase 3 compiler" after Phase 3 shipped, which is the failure mode
+a cross-reference in prose always has and an executed one does not.
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ from hypothesis import strategies as st
 
 from vifusion.temporal import oracle
 from vifusion.temporal.boundaries import is_visible
-from vifusion.temporal.records import CanonicalRecord, RecordKind
+from vifusion.temporal.records import CanonicalRecord, DuplicateRecordError, RecordKind
 from vifusion.temporal.replay import PredictionRequest, replay
 from vifusion.temporal.specs import (
     Aggregate,
@@ -238,11 +241,87 @@ def test_lineage_names_every_actual_dependency(
                 )
 
 
-@pytest.mark.skip(reason="invariant 4: batch/stream parity requires the Phase 3 compiler")
-def test_batch_and_stream_parity() -> None:
-    """Placeholder for section 10.2 invariant 4, due with the batch lowering in Phase 3."""
+@given(
+    records=_records(minimum=1),
+    times=_PREDICTION_TIMES,
+    delays=st.lists(st.integers(0, 8), min_size=1, max_size=6),
+)
+@SETTINGS
+def test_redelivering_records_changes_nothing(
+    records: list[CanonicalRecord], times: list[datetime], delays: list[int]
+) -> None:
+    """Section 10.5: idempotent handling of duplicate message identifiers.
+
+    Every record is redelivered under its own identifier with a fresh arrival time, which is
+    what an at-least-once broker does. Nothing may move — not a value, not a lineage, not the
+    reveal order of labels. The failure this catches is silent in the strongest sense: a
+    double-counted reading moves every aggregate over it while the lineage still names one
+    record, because lineage is a set of identifiers.
+    """
+    retries = [
+        record.model_copy(
+            update={"available_time": record.available_time + (delays[index % len(delays)] * STEP)}
+        )
+        for index, record in enumerate(records)
+    ]
+    before = replay(records, _requests(times), SPECS).deterministic_view()
+    after = replay([*records, *retries], _requests(times), SPECS).deterministic_view()
+    assert before == after
 
 
-@pytest.mark.skip(reason="invariant 6: unit checking is a compile-time analysis, Phase 3")
-def test_unit_preserving_operations_return_the_declared_unit() -> None:
-    """Placeholder for section 10.2 invariant 6, due with the unit checker in Phase 3."""
+@given(records=_records(minimum=1), times=_PREDICTION_TIMES)
+@SETTINGS
+def test_a_redelivery_that_contradicts_itself_is_refused(
+    records: list[CanonicalRecord], times: list[datetime]
+) -> None:
+    """The other half of the rule: one identifier naming two records is not a retry.
+
+    Deduplication is only meaningful if identifiers identify. Where they do not, the engine
+    must say so rather than silently keep one of the two values on the source's behalf.
+    """
+    target = records[0]
+    disagreeing = 1.0 if target.value != 1.0 else 2.0
+    contradiction = target.model_copy(update={"value": disagreeing})
+    with pytest.raises(DuplicateRecordError):
+        replay([*records, contradiction], _requests(times), SPECS)
+
+
+INVARIANT_COVERAGE: dict[int, str] = {
+    1: "tests.property.test_temporal_invariants::"
+    "test_a_future_unavailable_record_cannot_change_an_earlier_vector",
+    2: "tests.property.test_temporal_invariants::test_replay_prefix_consistency",
+    3: "tests.property.test_temporal_invariants::"
+    "test_reordering_the_log_does_not_change_the_result",
+    4: "tests.differential.test_batch_stream_parity::test_batch_and_streaming_agree",
+    5: "tests.differential.test_batch_stream_parity::"
+    "test_measured_state_stays_within_the_compiled_bound",
+    6: "tests.property.test_unit_preservation::"
+    "test_every_source_reading_operator_follows_its_declared_unit_rule",
+    7: "tests.property.test_temporal_invariants::test_lineage_names_every_actual_dependency",
+}
+"""Where each numbered invariant of section 10.2 is proven.
+
+Invariants 4, 5 and 6 are properties of the compiler and the batch lowering rather than of
+the replay clock, so they are asserted in the suites that own those components — but the
+plan enumerates seven invariants in one list, and a reader checking that list against the
+tests should not have to search for three of them.
+"""
+
+
+def test_every_section_10_2_invariant_has_a_named_test() -> None:
+    """The cross-reference above is executed rather than asserted in a docstring.
+
+    A prose pointer to another suite rots the moment that suite is renamed, and the rot is
+    invisible: the reference still reads correctly. Two skipped placeholders in this file
+    claimed for a whole phase that invariants 4 and 6 were future work after both had been
+    proven, which is the same failure in the other direction.
+    """
+    import importlib
+
+    assert set(INVARIANT_COVERAGE) == set(range(1, 8)), "section 10.2 lists seven invariants"
+    for invariant, reference in INVARIANT_COVERAGE.items():
+        module_name, _, test_name = reference.partition("::")
+        module = importlib.import_module(module_name)
+        assert hasattr(module, test_name), (
+            f"invariant {invariant} points at {reference}, which no longer exists"
+        )

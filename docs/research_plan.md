@@ -580,7 +580,7 @@ Build a small exhaustive simulator with measurements, delayed arrivals, missing 
 
 **Make the oracle structurally independent, not merely separate.** A second implementation written by the same author from the same mental model inherits the same misconceptions, and the differential test then has little power. Force a different algorithm: for each prediction time `t`, the oracle re-filters the *entire* record log by `available_time <= t` and computes the feature in plain Python, retaining no state between prediction times. It is quadratic and unusable at scale, which is acceptable on the synthetic suite. The production engine is incremental and stateful; the oracle is stateless and exhaustive. Because eligibility is re-derived from scratch rather than maintained, the two implementations fail in different ways, and their agreement is real evidence for H2a.
 
-The oracle suite should include at least 100 hand-auditable named scenarios plus property-generated cases. *(Progress: 72 named scenarios across eight families as of Phase 4, plus the Hypothesis suites and a 50-program labelled verifier corpus.)* Each named scenario states:
+The oracle suite should include at least 100 hand-auditable named scenarios plus property-generated cases. *(Progress: 76 named scenarios across eight families as of the Phase 2 audit, plus the Hypothesis suites and a 50-program labelled verifier corpus.)* Each named scenario states:
 
 - arrival sequence;
 - prediction time;
@@ -713,10 +713,10 @@ Exit criteria continue to govern progress more strongly than elapsed time.
 
 - [x] Implement canonical records and the replay clock as the three-event priority queue of section 5.2.1, with the boundary-inclusivity constant defined in exactly one module.
 - [x] Implement measurement, static, forecast, and label streams.
-- [x] Implement recorded and simulated availability models.
+- [ ] Implement recorded and simulated availability models. *(Deliberately reopened after the Phase 2 audit: `src/vifusion/temporal/availability.py` defines both models, but no module imports it and no test exercises it — every `available_time` in the system is supplied directly by a fixture or the synthetic generator. The enforcement point section 5.1 asks for — an adapter that must label its availability model as simulated and store its parameters — cannot exist until an adapter routes through it, so this is carried to Phase 5 with its consumer.)*
 - [x] Build the slow reference oracle.
 - [x] Add named leakage scenarios and property tests.
-- [x] Define late-data policies: ignore for prior output, revise, or retract. Use immutable prior predictions for primary evaluation.
+- [x] Define late-data policies: ignore for prior output, revise, or retract. Use immutable prior predictions for primary evaluation. *(Defined and unit-tested in `src/vifusion/temporal/late_data.py`, but reachable from no runtime or CLI path: the "immutable prior predictions" half is satisfied vacuously while there is no evaluation path to violate it. Wired in Phase 5 alongside the availability models.)*
 
 **Acceptance tests**
 
@@ -773,6 +773,7 @@ This phase was originally a two-week parity project. It is reduced because its e
 - [ ] Implement the USCRN update-file adapter and final-target separation **first**. It is small, freely downloadable without competition terms, and its availability must be *reconstructed* from dissemination windows rather than read off a delivered identifier — the harder adapter problem and the more novel artifact. Build the adapter machinery here.
 - [ ] Implement the Enefit adapter and competition-style availability replay second. `data_block_id` hands availability to you, so it exercises less of the machinery despite Enefit being the primary predictive dataset.
 - [ ] Implement Beijing adapter and declared simulated-arrival scenarios.
+- [ ] Route every adapter through the Phase 2 availability models and the late-data policies, which were built ahead of their consumer and are unreachable until now. This is the task that turns "availability is simulated here, with these parameters" from a docstring into something a record carries.
 - [ ] Optionally implement HRRR/Open-Meteo forecast-run extraction.
 - [ ] Generate dataset cards, checksums, time ranges, schema summaries, licenses, and provenance.
 - [ ] Create frozen train/validation/test manifests.

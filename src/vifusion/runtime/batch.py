@@ -32,7 +32,7 @@ from vifusion.compiler.compile import ExecutionPlan
 from vifusion.runtime.arithmetic import combine
 from vifusion.temporal import calendar
 from vifusion.temporal.boundaries import in_trailing_window, within_staleness
-from vifusion.temporal.records import CanonicalRecord, RecordKind
+from vifusion.temporal.records import CanonicalRecord, RecordKind, deduplicate
 from vifusion.temporal.replay import PredictionRequest
 from vifusion.temporal.specs import (
     Aggregate,
@@ -99,8 +99,15 @@ class _Stream:
 
 
 def _index(log: Sequence[CanonicalRecord]) -> dict[tuple[str, str, str], _Stream]:
+    """Group the log by stream and sort each group by availability.
+
+    Redeliveries are collapsed before indexing. Without that, a duplicated identifier would
+    occupy two slots in the eligible prefix and be counted twice by every aggregate — the
+    streaming path admits it once, so this is also where the two paths would silently
+    disagree.
+    """
     grouped: dict[tuple[str, str, str], list[CanonicalRecord]] = {}
-    for record in log:
+    for record in deduplicate(log):
         grouped.setdefault(record.stream_key, []).append(record)
     index: dict[tuple[str, str, str], _Stream] = {}
     for key, records in grouped.items():

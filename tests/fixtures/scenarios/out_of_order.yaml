@@ -167,3 +167,85 @@ scenarios:
       eligible: [f_old]
       values: {fc_3h: 10.0}
       lineage: {fc_3h: [f_old]}
+
+  - name: out_of_order_redelivery_under_one_id_is_ignored
+    description: >-
+      At-least-once delivery: the same message arrives twice under the same identifier, the
+      retry stamped with a later arrival time. It is one reading, so the count is one. An
+      implementation that appends both would report a plausible wrong count while its
+      lineage still named one record, because lineage is a set of identifiers.
+    records:
+      - {id: m1, event_time: "2024-01-01T02:00:00Z", available_time: "2024-01-01T02:05:00Z", value: 20.0}
+      - {id: m1, event_time: "2024-01-01T02:00:00Z", available_time: "2024-01-01T02:40:00Z", value: 20.0}
+    specs:
+      - {name: last_temp, op: last_value}
+      - {name: n_3h, op: window, window: 3h, aggregate: count}
+      - {name: mean_3h, op: window, window: 3h, aggregate: mean}
+    prediction_time: "2024-01-01T03:00:00Z"
+    expect:
+      eligible: [m1]
+      values: {last_temp: 20.0, n_3h: 1.0, mean_3h: 20.0}
+      lineage: {last_temp: [m1], n_3h: [m1], mean_3h: [m1]}
+
+  - name: out_of_order_redelivery_does_not_move_a_mean
+    description: >-
+      One of two genuine readings is redelivered. The mean must stay the mean of two
+      readings; double-counting one would pull it towards that value without changing the
+      lineage at all — the failure no lineage assertion can catch.
+    records:
+      - {id: m1, event_time: "2024-01-01T01:00:00Z", value: 10.0}
+      - {id: m2, event_time: "2024-01-01T02:00:00Z", value: 20.0}
+      - {id: m1, event_time: "2024-01-01T01:00:00Z", available_time: "2024-01-01T02:30:00Z", value: 10.0}
+    specs:
+      - {name: n_3h, op: window, window: 3h, aggregate: count}
+      - {name: mean_3h, op: window, window: 3h, aggregate: mean}
+      - {name: sum_3h, op: window, window: 3h, aggregate: sum}
+    prediction_time: "2024-01-01T03:00:00Z"
+    expect:
+      eligible: [m1, m2]
+      values: {n_3h: 2.0, mean_3h: 15.0, sum_3h: 30.0}
+      lineage: {mean_3h: [m1, m2]}
+
+  - name: out_of_order_redelivered_label_is_revealed_once
+    description: >-
+      A redelivered label is one reveal, not two. Section 10.5 requires idempotent handling
+      of duplicate identifiers, and a label counted twice would be scored twice.
+    records:
+      - id: y1
+        kind: label
+        feature: target
+        event_time: "2024-01-01T01:00:00Z"
+        available_time: "2024-01-01T02:00:00Z"
+        value: 99.0
+      - id: y1
+        kind: label
+        feature: target
+        event_time: "2024-01-01T01:00:00Z"
+        available_time: "2024-01-01T02:45:00Z"
+        value: 99.0
+    specs: []
+    prediction_time: "2024-01-01T03:00:00Z"
+    expect:
+      eligible: [y1]
+      usable_labels: [y1]
+
+  - name: out_of_order_redelivered_forecast_keeps_its_first_arrival
+    description: >-
+      A forecast issue republished unchanged. The value and the lineage are unmoved, and so
+      is the arrival time the lineage reports: the retry cannot make information less
+      available than it already was, and the batch path — which sorts by availability and
+      takes the earliest — would disagree if the streaming path preferred the retry.
+    records:
+      - {id: f1, kind: forecast, feature: temp_fc, issued_time: "2024-01-01T01:00:00Z",
+         available_time: "2024-01-01T01:10:00Z", event_time: "2024-01-01T01:00:00Z",
+         valid_time: "2024-01-01T06:00:00Z", value: 30.0}
+      - {id: f1, kind: forecast, feature: temp_fc, issued_time: "2024-01-01T01:00:00Z",
+         available_time: "2024-01-01T02:50:00Z", event_time: "2024-01-01T01:00:00Z",
+         valid_time: "2024-01-01T06:00:00Z", value: 30.0}
+    specs:
+      - {name: fc_3h, op: forecast, feature: temp_fc, lead: 3h}
+    prediction_time: "2024-01-01T03:00:00Z"
+    expect:
+      eligible: [f1]
+      values: {fc_3h: 30.0}
+      lineage: {fc_3h: [f1]}

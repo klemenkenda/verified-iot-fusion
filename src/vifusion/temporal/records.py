@@ -19,6 +19,7 @@ forecast available before it was issued, a measurement carrying a forecast's iss
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from enum import StrEnum
 from typing import Any, Self
@@ -44,6 +45,13 @@ class RecordKind(StrEnum):
 
 class RecordError(ValueError):
     """A record violates the canonical structure of section 5.1."""
+
+
+class DuplicateRecordError(RecordError):
+    """One message identifier names two different records.
+
+    Distinct from a redelivery, which is handled silently: see :func:`deduplicate`.
+    """
 
 
 class CanonicalRecord(BaseModel):
@@ -124,3 +132,71 @@ class CanonicalRecord(BaseModel):
                     "availability may lag the event but can never precede it"
                 )
         return self
+
+
+ContentSignature = tuple[Any, ...]
+
+
+def content_signature(record: CanonicalRecord) -> ContentSignature:
+    """Everything a record says, excluding when it was delivered.
+
+    ``record_id`` is the message identity; this is what that identity is expected to name.
+    Two deliveries that agree here are one message arriving twice. Two that disagree are a
+    broken identifier, which :func:`deduplicate` refuses rather than resolves.
+
+    ``available_time`` is excluded deliberately: a broker that redelivers stamps the retry
+    with a fresh arrival time, so requiring the two to match would turn the very case this
+    exists to handle into a conflict. ``provenance`` is excluded for the same reason — it
+    records how a record reached us, not what it says.
+    """
+    return (
+        record.kind,
+        record.entity_id,
+        record.source_id,
+        record.feature_name,
+        record.value,
+        record.unit,
+        record.event_time,
+        record.valid_time,
+        record.issued_time,
+        record.revision_id,
+        record.quality,
+    )
+
+
+def deduplicate(log: Sequence[CanonicalRecord]) -> list[CanonicalRecord]:
+    """Collapse redeliveries, keeping the earliest arrival of each identifier.
+
+    Section 10.5 requires idempotent handling of duplicate message identifiers. At-least-once
+    delivery is the norm for the brokers this system is meant to read, and a redelivered
+    reading counted twice moves every aggregate over it while leaving the lineage looking
+    correct — the identifier appears in it either way, once rather than twice, because
+    lineage is a set of identifiers. That is the failure this function exists to prevent:
+    one that no assertion about lineage can catch.
+
+    **The earliest arrival wins.** A retry cannot make information less available than it
+    already was, and taking the earliest is the only choice independent of the order the log
+    was assembled in, which invariant 3 of section 10.2 requires. The result is returned in
+    arrival order for the same reason: a function whose *output order* depended on how the
+    log was assembled would push that dependency downstream rather than remove it.
+
+    **A conflicting redelivery raises rather than resolving.** If one identifier names two
+    different messages, the identity assumption that makes deduplication meaningful is
+    already broken; silently keeping one would pick a value on the source's behalf.
+    """
+    chosen: dict[str, CanonicalRecord] = {}
+    for record in log:
+        previous = chosen.get(record.record_id)
+        if previous is None:
+            chosen[record.record_id] = record
+            continue
+        if content_signature(previous) != content_signature(record):
+            raise DuplicateRecordError(
+                f"record id {record.record_id!r} names two different records; a message "
+                "identifier must identify a message, and no rule can decide which of the "
+                "two the source meant"
+            )
+        if record.available_time < previous.available_time:
+            chosen[record.record_id] = record
+
+    return sorted(chosen.values(), key=lambda record: (record.available_time, record.record_id))
