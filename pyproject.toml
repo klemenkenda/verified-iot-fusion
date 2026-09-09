@@ -3,29 +3,36 @@ name = "vifusion"
 version = "0.0.0"
 description = "Verified LLM-assisted feature engineering for heterogeneous IoT streams"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Klemen Kenda", email = "klemen.kenda@ijs.si" }]
 
-# Direct dependencies from section 6 of docs/research_plan.md. Phase 1 pins every one of
-# these to an exact version and commits uv.lock; until then this list only records intent.
+# Only dependencies that are actually imported are declared here, and uv.lock pins the
+# full resolved graph. The remaining tools of section 6 of docs/research_plan.md enter as
+# optional groups when the phase that needs them lands, so that a clean checkout at any
+# commit installs exactly what that commit uses.
 dependencies = [
-    "pydantic",
-    "polars",
-    "duckdb",
-    "pint",
-    "river",
-    "lightgbm",
+    "pydantic>=2.9",
+    "pyyaml>=6.0",
 ]
+
+[project.optional-dependencies]
+# Phase 3 onwards: columnar transformation, analytical replay, compile-time units.
+data = ["polars>=1.0", "duckdb>=1.0", "pint>=0.24"]
+# Phase 6 onwards: incremental models and the tabular baseline.
+ml = ["river>=0.21", "lightgbm>=4.5"]
 
 [project.scripts]
 vifusion = "vifusion.cli:main"
 
 [dependency-groups]
 dev = [
-    "pytest",
-    "hypothesis",
-    "ruff",
-    "mypy",
+    "pytest>=8.0",
+    "hypothesis>=6.100",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "types-PyYAML>=6.0",
 ]
 
 [build-system]
@@ -37,12 +44,28 @@ packages = ["src/vifusion"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--strict-markers"
+addopts = "--strict-markers -q"
+markers = [
+    "slow: excluded from the default developer loop",
+]
 
 [tool.ruff]
 src = ["src", "tests"]
 line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
 
 [tool.mypy]
 files = ["src", "tests"]
+python_version = "3.12"
 strict = true
+warn_unreachable = true
+
+# Environment capture branches on sys.platform, so one branch is statically dead on
+# whichever platform mypy runs on. CI type-checks on both Linux and Windows, which
+# covers each branch once; the unreachable warning here would only ever be noise.
+[[tool.mypy.overrides]]
+module = "vifusion.environment"
+warn_unreachable = false

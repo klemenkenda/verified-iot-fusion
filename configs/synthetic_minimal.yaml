@@ -1,0 +1,28 @@
+# Smallest complete run configuration. Used by the Phase 1 determinism acceptance test and
+# as the worked example for the configuration schema.
+#
+# Every value here is part of the run's identity: the file hashes into task_config_hash, so
+# changing any field below produces a different run rather than a variation of this one.
+schema_version: "0.1.0"
+name: synthetic-minimal
+
+dataset:
+  name: synthetic
+  version: "0.1.0"
+
+# The fixture carries no temporal semantics yet, so its availability times are declared
+# simulated rather than recorded. Section 12 requires this declaration on every run, and
+# section 14 requires simulated availability to be labelled as such in the manuscript.
+availability:
+  model: simulated
+  parameters: {}
+
+seeds:
+  model_seed: 20260909
+  generation_seed: null
+
+synthetic:
+  series_count: 3
+  step_count: 8
+  start: 2024-01-01T00:00:00Z
+  step_seconds: 3600

@@ -693,17 +693,17 @@ Exit criteria continue to govern progress more strongly than elapsed time.
 
 **Tasks**
 
-- [ ] Create the Python package, lockfile, formatting, type checking, test runner, and continuous integration.
-- [ ] Add configuration and result schemas with version numbers.
-- [ ] Implement structured logging, run IDs, seed handling, and environment capture.
-- [ ] Add a command that validates configuration without accessing data.
-- [ ] Add a tiny checked-in synthetic fixture; keep downloaded data out of Git.
+- [x] Create the Python package, lockfile, formatting, type checking, test runner, and continuous integration.
+- [x] Add configuration and result schemas with version numbers.
+- [x] Implement structured logging, run IDs, seed handling, and environment capture.
+- [x] Add a command that validates configuration without accessing data.
+- [x] Add a tiny checked-in synthetic fixture; keep downloaded data out of Git.
 
 **Acceptance tests**
 
-- [ ] A clean checkout installs from the lockfile.
-- [ ] Unit tests run offline.
-- [ ] Two identical synthetic runs of the *same* execution path produce byte-identical feature outputs and equivalent result metadata, excluding declared volatile fields. Run-to-run determinism is bit equality; batch-versus-stream parity is the tolerance-based equivalence of section 10.2. The two must not be conflated in acceptance criteria.
+- [x] A clean checkout installs from the lockfile.
+- [x] Unit tests run offline.
+- [x] Two identical synthetic runs of the *same* execution path produce byte-identical feature outputs and equivalent result metadata, excluding declared volatile fields. Run-to-run determinism is bit equality; batch-versus-stream parity is the tolerance-based equivalence of section 10.2. The two must not be conflated in acceptance criteria.
 
 **Exit criterion:** CI passes on a clean environment and produces a versioned run manifest.
 
@@ -1058,8 +1058,8 @@ The first six working days should produce a reviewable vertical slice. With an a
 
 ### Day 1
 
-- [ ] Create the new repository and copy this plan into `docs/research_plan.md`.
-- [ ] Add `AGENTS.md`, `pyproject.toml`, lockfile, CI, code quality tools, and test directories.
+- [x] Create the new repository and copy this plan into `docs/research_plan.md`.
+- [x] Add `AGENTS.md`, `pyproject.toml`, lockfile, CI, code quality tools, and test directories.
 - [ ] Write the canonical Pydantic record types and terminology page.
 
 ### Day 2

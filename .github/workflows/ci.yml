@@ -1,0 +1,93 @@
+name: CI
+
+# Phase 1 exit criterion: CI passes on a clean environment and produces a versioned run
+# manifest. Both platforms are checked because byte-identical outputs are an acceptance
+# criterion, and line endings, path handling, and float formatting are exactly where a
+# platform difference would break that quietly.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Every dependency comes from the lockfile; an implicit resolution would defeat the point.
+  UV_FROZEN: "1"
+
+jobs:
+  checks:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Lockfile is current
+        run: uv lock --check
+
+      - name: Install from the lockfile
+        run: uv sync --frozen --all-groups
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format
+        run: uv run ruff format --check .
+
+      - name: Types
+        run: uv run mypy
+
+      - name: Tests
+        run: uv run pytest
+
+      - name: Produce a versioned run manifest
+        run: uv run vifusion run configs/synthetic_minimal.yaml --output artifacts/ci-run
+
+      - name: Manifest is versioned and complete
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          manifest = json.loads(Path("artifacts/ci-run/manifest.json").read_text(encoding="utf-8"))
+          required = {
+              "schema_version", "run_id", "created_at", "git_commit", "dirty_worktree",
+              "environment_lock_hash", "dataset_name", "dataset_version", "raw_data_hashes",
+              "split_manifest_hash", "availability_model", "availability_parameters",
+              "task_config_hash", "feature_program_hash", "prompt_hash", "llm_model",
+              "llm_parameters", "generation_seed", "model_seed", "hardware", "metrics",
+              "artifacts",
+          }
+          missing = required - manifest.keys()
+          if missing:
+              sys.exit(f"manifest is missing required fields: {sorted(missing)}")
+          if not manifest["schema_version"]:
+              sys.exit("manifest carries no schema_version")
+          if manifest["environment_lock_hash"] is None:
+              sys.exit("manifest records no environment lock hash")
+          print(f"manifest {manifest['run_id']} schema {manifest['schema_version']} ok")
+          PY
+
+      - name: Upload the run manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-manifest-${{ matrix.os }}
+          path: artifacts/ci-run/
+          if-no-files-found: error

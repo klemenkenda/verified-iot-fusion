@@ -12,8 +12,9 @@ and this file governs the schedule.
 | Repository / package name | `verified-iot-fusion` / `vifusion` | 2026-09-09 |
 | Track order | Phase 0 and Phases 1–3 run in parallel | 2026-09-09 |
 | Focused days per week | 2, with implementation delegated to the assistant | 2026-09-09 |
-| Software license | Open — decide at Phase 0 exit | — |
-| Datasets and compute/API budget | Open — decide at Phase 0 exit | — |
+| Software license | MIT | 2026-09-09 |
+| Minimum datasets | Enefit, USCRN, Beijing, synthetic oracle suite | 2026-09-09 |
+| Compute/API budget | OpenRouter, $50/day | 2026-09-09 |
 
 ## 2. Shape of the execution
 

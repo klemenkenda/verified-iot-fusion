@@ -1,0 +1,7 @@
+# Byte-identical outputs are an acceptance criterion (Phase 1), so line endings must not
+# depend on the checkout platform. Everything is LF in the repository and in the worktree.
+* text=auto eol=lf
+
+# Golden fixtures are compared byte for byte; git must never rewrite them.
+tests/fixtures/** -text
+*.parquet binary

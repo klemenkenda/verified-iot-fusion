@@ -34,11 +34,33 @@ data/             see data/README.md; downloaded data stays out of Git
 artifacts/        generated run outputs, feature cards, manifests
 ```
 
+## Quick start
+
+Requires [`uv`](https://docs.astral.sh/uv/); it fetches the pinned Python itself.
+
+```bash
+uv sync --frozen --all-groups        # install exactly what uv.lock pins
+uv run vifusion validate-config configs/synthetic_minimal.yaml
+uv run vifusion run configs/synthetic_minimal.yaml --output artifacts/dev-run
+uv run pytest                        # offline; no dataset required
+```
+
+The run writes `features.csv` and a `manifest.json` recording the code revision, the
+environment lock hash, the configuration hash, seeds, hardware, and a checksum of every
+artifact produced.
+
 ## Status
 
-Phase 0 of the roadmap. The directory structure is in place; the package is not yet
-implemented. See section 11 of the plan for the phased roadmap and section 15 for the
-decision gates.
+**Phase 1 complete** — deterministic skeleton. The package installs from a lockfile, CI
+checks lint, types, and tests on Linux and Windows, and two identical runs produce
+byte-identical outputs with equivalent manifests.
+
+The temporal core does not exist yet: nothing here models `event_time`, `available_time`,
+or label reveal. That is Phase 2, and it is built oracle-first — see
+[docs/execution_plan.md](docs/execution_plan.md). The synthetic fixture is deliberately
+semantics-free so that it does not pre-empt that design.
+
+See section 11 of the plan for the phased roadmap and section 15 for the decision gates.
 
 ## Naming
 

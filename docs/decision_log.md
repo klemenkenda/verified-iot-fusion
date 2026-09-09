@@ -81,14 +81,96 @@ recorded here, including whether it was made before or after viewing test result
 - **Made before or after viewing test results:** not applicable
 - **Phase / gate:** Phase 0, revisited at Gate A
 
-### OPEN — Software license
+### 2026-09-09 — Software license
 
-Not yet chosen; `LICENSE` is absent and `CITATION.cff` carries a placeholder. Phase 0 lists
-the choice as a task and Phase 11 requires a code license alongside `CITATION.cff` and the
-data statement. Must be compatible with the dependencies of section 6 and with the intended
-release.
+- **Decision:** MIT for the `vifusion` codebase.
+- **Alternatives considered:** Apache 2.0, for its explicit patent grant and trademark
+  clause.
+- **Rationale:** Every declared dependency (`pydantic`, `pyyaml`, `polars`, `duckdb`,
+  `pint`, `river`, `lightgbm`, `hatchling`) is MIT/BSD/Apache with no copyleft terms, so
+  nothing in section 6 forces a particular choice. MIT is the lowest-friction default for
+  an academic, Zenodo-archived research artifact and carries no CLA or patent-grant
+  overhead to maintain. This is independent of the Enefit dataset's CC BY-NC-SA 4.0 terms
+  (section 8.1), which constrain data redistribution, not the code license.
+- **Affected experiments / artifacts:** `LICENSE`, `pyproject.toml`, `CITATION.cff`.
+- **Made before or after viewing test results:** not applicable
+- **Phase / gate:** Phase 0
 
-### OPEN — Minimum datasets and compute/API budget
+### 2026-09-09 — Minimum dataset commitment confirmed
 
-Phase 0 task. Section 8.6 sets the minimum commitment; section 9.4 the search budget.
-Gates the Phase 5 adapter work and the Phase 7 provider choice.
+- **Decision:** Adopt the section 8.6 minimum dataset set as-is: Enefit (heterogeneous
+  predictive fusion, native release blocks), NOAA USCRN (native delayed delivery,
+  temporal-correctness primary), Beijing Multi-Site Air Quality (cross-domain,
+  unseen-station generalization), and a synthetic oracle suite (exhaustive correctness).
+  Implementation order remains USCRN before Enefit (Phase 5), since reconstructing
+  availability exercises more adapter machinery than a delivered `data_block_id`. HRRR/
+  Open-Meteo, Intel Berkeley, and Building Data Genome 2 remain optional, added only if
+  time permits or a specific scale/transfer claim needs them.
+- **Alternatives considered:** None distinct from section 8's own optional/extension tier;
+  the base plan was accepted without modification.
+- **Rationale:** The set already spans the three evidential roles the manuscript needs
+  (heterogeneous fusion, native temporal delay, cross-domain transfer) plus an exhaustive
+  synthetic check, without adding datasets whose licensing or scope is not yet resolved.
+- **Open caveat:** Enefit's CC BY-NC-SA 4.0 non-commercial clause (section 8.1) is not yet
+  resolved against the intended artifact release; this must land before Phase 11 packaging.
+- **Affected experiments / artifacts:** `docs/execution_plan.md`; gates Phase 5 adapter
+  scope.
+- **Made before or after viewing test results:** not applicable
+- **Phase / gate:** Phase 0
+
+### 2026-09-09 — Compute/API budget and provider
+
+- **Decision:** LLM provider is OpenRouter; budget envelope is $50/day.
+- **Alternatives considered:** None recorded yet — direct provider APIs (e.g. Anthropic,
+  OpenAI) were not evaluated against OpenRouter's model-routing flexibility and single
+  billing surface.
+- **Rationale:** Not recorded; researcher's existing OpenRouter access and daily-cap
+  billing model set the envelope.
+- **Affected experiments / artifacts:** Gates the Phase 7 provider choice and the section
+  9.4 search-budget freeze at Gate C — the per-run LLM-call/token/candidate budget for
+  Phase 9's grid must fit within this daily envelope, and Phase 9's parallel-run design
+  should be sized against it. `docs/execution_plan.md`.
+- **Made before or after viewing test results:** not applicable
+- **Phase / gate:** Phase 0, refined at Gate C
+
+### 2026-09-09 — Phase 1 skeleton: three implementation decisions
+
+- **Decision (a): volatile manifest fields are `run_id`, `created_at`, `hardware`, and
+  nothing else.** Phase 1's acceptance criterion compares two runs excluding "declared
+  volatile fields", so this declaration *is* the criterion. Every other field must be
+  reproduced exactly by an identical rerun.
+- **Rationale:** The first two identify a run rather than describe it; `hardware` describes
+  the machine, so equivalence must survive a laptop and a CI runner producing identical
+  results. Widening the set weakens the acceptance test, so it is pinned by a test of its
+  own (`test_volatile_set_stays_minimal`).
+
+- **Decision (b): dependencies are declared only once imported.** `pydantic` and `pyyaml`
+  are required; Polars, DuckDB, Pint, River, and LightGBM move to optional groups until the
+  phase that uses them.
+- **Rationale:** Section 6 requires every direct dependency to be pinned, and `uv.lock`
+  pins the full graph. Declaring libraries the code does not yet import would pin versions
+  chosen months before first use and slow every CI run for no evidence. A clean checkout at
+  any commit then installs exactly what that commit uses.
+
+- **Decision (c): Python is pinned to 3.12 via `.python-version`.**
+- **Rationale:** Reproducibility requires a fixed interpreter, and 3.12 has the widest wheel
+  coverage for the Phase 6 modelling stack. `uv` fetches it, so the pin costs one download.
+
+- **Affected experiments / artifacts:** `pyproject.toml`, `uv.lock`, `.python-version`,
+  `src/vifusion/manifest.py`.
+- **Made before or after viewing test results:** not applicable
+- **Phase / gate:** Phase 1
+
+### 2026-09-09 — Environment lock hash resolved without git
+
+- **Decision:** `environment_lock_hash` locates `uv.lock` by walking up the directory tree
+  rather than by asking git for the repository root.
+- **Rationale:** Found while verifying the Phase 1 acceptance criterion in an exported tree.
+  Deriving the path from git returns None for a source archive that ships `uv.lock` beside
+  the code — which is exactly the artifact Phase 11 sends to Zenodo and Phase 12 asks a
+  colleague to run. The manifest would have silently recorded an unknown environment for the
+  distribution reviewers actually receive.
+- **Affected experiments / artifacts:** `src/vifusion/environment.py`; regression test
+  `test_lock_hash_does_not_require_git`.
+- **Made before or after viewing test results:** not applicable
+- **Phase / gate:** Phase 1
