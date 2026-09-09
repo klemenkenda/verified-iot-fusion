@@ -18,7 +18,9 @@ from vifusion.temporal.boundaries import is_visible
 SCENARIOS = load_scenarios()
 
 
-def assert_value_matches(expected: float | str | None, actual: float | str | None, label: str)-> None:
+def assert_value_matches(
+    expected: float | str | None, actual: float | str | None, label: str
+) -> None:
     """Compare a declared expectation with a computed value.
 
     Floats are compared with a tight relative tolerance rather than exactly: the declared
@@ -79,7 +81,8 @@ def test_oracle_reports_usable_labels(scenario: Scenario) -> None:
     if scenario.expected_usable_labels is None:
         pytest.skip("scenario declares no label expectation")
     usable = tuple(
-        record.record_id for record in oracle.usable_labels(scenario.records, scenario.prediction_time)
+        record.record_id
+        for record in oracle.usable_labels(scenario.records, scenario.prediction_time)
     )
     assert tuple(sorted(usable)) == tuple(sorted(scenario.expected_usable_labels))
 

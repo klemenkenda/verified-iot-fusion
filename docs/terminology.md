@@ -14,5 +14,19 @@ are a collapse of two of these into one.
 | `label_time` | When the labelled outcome occurred. |
 | `label_available_time` | When the label became known, which governs delayed-label evaluation. |
 
-Boundary inclusivity at `available_time == prediction_time` is defined by a single constant
-in exactly one module (section 16, day 2). Do not re-derive it anywhere else.
+## Boundary conventions
+
+All four are declared in [`vifusion.temporal.boundaries`](../src/vifusion/temporal/boundaries.py)
+and nowhere else. `tests/leakage/test_boundary_is_defined_once.py` walks the syntax tree of
+every module and fails the build if another one compares a governed timestamp directly.
+
+| Boundary | Convention | Fixed by |
+| --- | --- | --- |
+| `available_time == prediction_time` | Visible | Section 5.2.1 |
+| Trailing window start, `t - lookback` | Excluded | Decision log, 2026-09-09 |
+| Trailing window end, `t` | Included | Decision log, 2026-09-09 |
+| Age equal to `max_staleness` | Within the bound | Decision log, 2026-09-09 |
+| `label_available_time == t` | Usable | Section 5.2.1, by analogy |
+
+The replay queue encodes the first of these as an execution order: at equal timestamps,
+record arrivals are processed before label reveals, and both before prediction requests.

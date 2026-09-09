@@ -6,6 +6,11 @@ data/*
 artifacts/*
 !artifacts/README.md
 
+# Reading-list sources: third-party papers, not ours to redistribute.
+# docs/literature/README.md carries the URLs and checksums to re-fetch them.
+docs/literature/*
+!docs/literature/README.md
+
 # Experiment outputs are append-only but large; commit deliberately.
 experiments/**/*.parquet
 experiments/**/*.duckdb

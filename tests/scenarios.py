@@ -63,7 +63,7 @@ def parse_time(value: Any, field: str) -> datetime:
     if isinstance(value, datetime):
         raise TypeError(
             f"{field} was parsed by YAML as a bare timestamp and lost its timezone; "
-            "quote it, for example \"2024-01-01T00:00:00Z\""
+            'quote it, for example "2024-01-01T00:00:00Z"'
         )
     if not isinstance(value, str):
         raise TypeError(f"{field} must be a quoted ISO-8601 string, got {type(value).__name__}")

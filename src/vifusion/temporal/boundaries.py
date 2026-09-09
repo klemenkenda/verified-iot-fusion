@@ -71,6 +71,22 @@ def in_trailing_window(
     return after_start and before_end
 
 
+def within_staleness(
+    event_time: datetime,
+    prediction_time: datetime,
+    max_staleness: timedelta,
+) -> bool:
+    """Whether an observation is fresh enough to serve as a last-known value.
+
+    Age equal to the bound is *within* it, consistent with every other boundary here. This
+    lives in this module rather than in the operator because it is the same class of
+    decision as the others: section 5.2.1 requires window boundaries, forecast selectors,
+    and label gates all to reference this module rather than restate a comparison, and a
+    staleness bound restated in two implementations is a divergence waiting to happen.
+    """
+    return prediction_time - event_time <= max_staleness
+
+
 def is_label_usable(label_available_time: datetime, now: datetime) -> bool:
     """Whether a label may be used for learning or scoring at ``now``."""
     if LABEL_BOUNDARY_INCLUSIVE:

@@ -220,3 +220,118 @@ recorded here, including whether it was made before or after viewing test result
   alongside `docs/novelty.md`.
 - **Made before or after viewing test results:** not applicable
 - **Phase / gate:** Phase 0, frozen at Gate A
+
+### 2026-09-09 — Literature matrix populated at abstract depth; novelty column left to the researcher
+
+- **Decision:** All 11 sources on the section 4 minimum reading list are entered in
+  [`docs/literature_matrix.csv`](literature_matrix.csv) with every factual column filled.
+  The `relationship_to_this_work` column is deliberately left as `TODO (researcher)` on
+  every row — that column *is* the novelty defence, which section 4 of the execution plan
+  states cannot be delegated.
+- **Read depth — the load-bearing caveat:** rows were built from abstracts and landing
+  pages, not full texts (exceptions: `kenda2019streaming`, grounded in the source-code audit
+  at rev `708053a`, which is deeper than its abstract; and `hollmann2023caafe`, whose
+  verification column comes from the repository README). Cells therefore distinguish **not
+  addressed** (confidently absent given the paper's scope, e.g. temporal semantics in an
+  i.i.d. tabular method) from **not stated in abstract** (genuinely unknown, full text not
+  read). `nam2024octree` and `abhyankar2025llmfe` carry the latter marker on the
+  `verification` column specifically, which is exactly where the novelty contrast is
+  sharpest — both need a full-text read before Gate A.
+- **Alternatives considered:** Drafting candidate `relationship_to_this_work` text for the
+  researcher to correct. Rejected for now: a pre-filled novelty claim is harder to disagree
+  with than an empty cell, and the failure mode being guarded against is exactly a claim
+  that survives to review because nobody re-derived it.
+- **Rationale:** Populating the factual columns is mechanical extraction and compresses;
+  judging what each paper does *not* do that this work does is the part that must survive a
+  reviewer, and it is bounded by the researcher having actually read the papers.
+- **Affected experiments / artifacts:** `docs/literature_matrix.csv`; gates
+  `docs/novelty.md` and thus the Phase 0 exit criterion. Bears on
+  [R-03](risk_register.md) (recent work overlaps the contribution).
+- **Made before or after viewing test results:** not applicable
+- **Phase / gate:** Phase 0
+
+### 2026-09-09 — Reading-list sources stored locally but never committed
+
+- **Decision:** The 11 reading-list sources are kept at `docs/literature/`, one file per
+  matrix `citation_key`, and gitignored. Only
+  [`docs/literature/README.md`](literature/README.md) is committed, carrying the source URL,
+  SHA-256, and retrieval date for each so the directory can be rebuilt from the repository
+  alone.
+- **Alternatives considered:** Committing the PDFs, which would make the reading list
+  self-contained and immune to link rot.
+- **Rationale:** Open access is not redistribution rights. arXiv, NeurIPS, and CC BY MDPI
+  copies are all freely *retrievable*, but committing them would put third-party works into
+  the repository history and therefore into the Phase 11 Zenodo archive, where the artifact
+  checklist requires that data and model licences permit the released artifacts. Checksums
+  preserve the reproducibility benefit without the licence exposure.
+- **Consequence to remember at Phase 11:** the archived artifact must not ship
+  `docs/literature/`; the README is the substitute, and it is the reason a reviewer can
+  still reconstruct exactly which version of each source was read.
+- **Affected experiments / artifacts:** `.gitignore`, `docs/literature/README.md`.
+- **Made before or after viewing test results:** not applicable
+- **Phase / gate:** Phase 0, revisited at Phase 11
+
+### 2026-09-09 — Phase 2 temporal semantics: five decisions the plan left open
+
+Section 5 fixes the availability boundary and the vocabulary. These five choices sit
+underneath it, are consulted by both the engine and the oracle, and would each be defensible
+the other way — what matters is that each is decided once and stated.
+
+- **(a) Trailing windows are half-open, `(t - lookback, t]`.** The right edge is closed for
+  consistency with the inclusive availability rule; the left edge is open so consecutive
+  windows tile time without double-counting a boundary observation. Declared in
+  `vifusion.temporal.boundaries` as `WINDOW_START_INCLUSIVE` / `WINDOW_END_INCLUSIVE`.
+- **(b) A null value carries empty lineage.** Lineage names records that contributed to the
+  value returned. The alternative — naming records that were read but produced nothing —
+  requires deciding, per operator, whether a record rejected by a declared bound counts as
+  read, and the two implementations would drift on that question one operator at a time.
+  Enforced in the `FeatureValue` constructor rather than documented.
+- **(c) Variance is the sample variance,** `n - 1`, undefined below two observations.
+  Population variance is equally defensible; only the consistency matters.
+- **(d) Selection ties resolve through a total order** ending in the record id — event time,
+  then availability, then id — so a result can never depend on the order the log was
+  assembled. Forecast issues order by issue time, availability, revision id, then record id.
+- **(e) Missing count treats a present-but-null record as missing** and retains it in
+  lineage, since its presence is what the count depends on.
+
+- **Affected experiments / artifacts:** `src/vifusion/temporal/`, the 41 named scenarios in
+  `tests/fixtures/scenarios/`.
+- **Made before or after viewing test results:** not applicable
+- **Phase / gate:** Phase 2
+
+### 2026-09-09 — The staleness bound moved into the boundaries module
+
+- **Decision:** `within_staleness` joins the inclusivity predicates rather than living in
+  each operator.
+- **Rationale:** Section 5.2.1 requires window boundaries, forecast selectors, and label
+  gates to reference the boundary module rather than restate a comparison. A staleness bound
+  is the same class of decision, and it was being restated in both the engine and the
+  oracle — two copies of a rule that must agree. `tests/leakage/test_boundary_is_defined_once.py`
+  now enforces the constraint structurally, by walking the syntax tree of every module.
+- **Phase / gate:** Phase 2
+
+### 2026-09-09 — Two engine defects found by the differential and property suites
+
+Recorded because they are evidence about *method*, not only about the code: both were in the
+incremental engine, neither was visible in the engine's own tests, and each was caught by a
+different instrument.
+
+- **Eviction horizon was half-open.** The engine pruned retained records on `event_time >
+  horizon`, matching the trailing-window convention. But an exact lag of `L` addresses
+  precisely `t - L`, so the one record that operator needs was evicted and the feature
+  silently returned null. Caught by the differential test against the oracle, which prunes
+  nothing. Fixed by making eviction conservative — retention is a memory optimisation and
+  filtering is the evaluator's job.
+- **Retention was inverted for mixed streams.** When a stream carried both bounded and
+  unbounded specs, the engine cleared the whole window: an unbounded spec was treated as
+  requiring *less* retention rather than more. Any window aggregate sharing a stream with an
+  unbounded last-value silently read an empty window. Caught by Hypothesis, not by the named
+  scenarios, because each scenario used a narrow spec set and the bug needed two kinds of
+  spec on one stream.
+- **Consequence for the plan:** section 11.0 predicts that an assistant's failures
+  concentrate in window inclusivity and boundary handling, and both defects were exactly
+  that. Neither would have been caught by an oracle written after the engine, which is the
+  case for the oracle-first ordering in `docs/execution_plan.md`.
+- **Regression tests:** `tests/differential/test_scenarios_engine.py`,
+  `tests/property/test_temporal_invariants.py`.
+- **Phase / gate:** Phase 2

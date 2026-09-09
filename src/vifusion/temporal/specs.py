@@ -46,6 +46,27 @@ class Aggregate(StrEnum):
     MAX = "max"
 
 
+PARITY_TOLERANCE_ULPS: dict[Aggregate, int] = {
+    Aggregate.COUNT: 0,
+    Aggregate.MIN: 0,
+    Aggregate.MAX: 0,
+    Aggregate.SUM: 4,
+    Aggregate.MEAN: 4,
+    Aggregate.VARIANCE: 16,
+    Aggregate.STDDEV: 16,
+}
+"""Declared parity budget per operator, in units in the last place (section 10.2).
+
+Parity is an equivalence with a declared tolerance, not bit equality: an incremental Welford
+update and a two-pass sum of the same window differ in their last bits, and requiring exact
+agreement would produce a criterion that is quietly weakened later instead of stated
+honestly now. Counts and extrema are selections rather than arithmetic, so they are exact.
+
+Declared here and moved into the operator registry in Phase 3, where the compiler owns it
+and the artifact reports it.
+"""
+
+
 class RevisionPolicy(StrEnum):
     """How to choose among several issues of a forecast for the same valid time."""
 

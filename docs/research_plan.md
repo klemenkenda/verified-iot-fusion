@@ -711,19 +711,19 @@ Exit criteria continue to govern progress more strongly than elapsed time.
 
 **Tasks**
 
-- [ ] Implement canonical records and the replay clock as the three-event priority queue of section 5.2.1, with the boundary-inclusivity constant defined in exactly one module.
-- [ ] Implement measurement, static, forecast, and label streams.
-- [ ] Implement recorded and simulated availability models.
-- [ ] Build the slow reference oracle.
-- [ ] Add named leakage scenarios and property tests.
-- [ ] Define late-data policies: ignore for prior output, revise, or retract. Use immutable prior predictions for primary evaluation.
+- [x] Implement canonical records and the replay clock as the three-event priority queue of section 5.2.1, with the boundary-inclusivity constant defined in exactly one module.
+- [x] Implement measurement, static, forecast, and label streams.
+- [x] Implement recorded and simulated availability models.
+- [x] Build the slow reference oracle.
+- [x] Add named leakage scenarios and property tests.
+- [x] Define late-data policies: ignore for prior output, revise, or retract. Use immutable prior predictions for primary evaluation.
 
 **Acceptance tests**
 
-- [ ] No future-unavailable record changes an earlier vector.
-- [ ] Revised forecasts select the correct issue as of prediction time.
-- [ ] Delayed labels update models only after `label_available_time`.
-- [ ] Replay is deterministic across runs.
+- [x] No future-unavailable record changes an earlier vector.
+- [x] Revised forecasts select the correct issue as of prediction time.
+- [x] Delayed labels update models only after `label_available_time`.
+- [x] Replay is deterministic across runs.
 
 **Exit criterion:** The temporal oracle and all leakage tests pass before any LLM is connected.
 
@@ -1060,19 +1060,19 @@ The first six working days should produce a reviewable vertical slice. With an a
 
 - [x] Create the new repository and copy this plan into `docs/research_plan.md`.
 - [x] Add `AGENTS.md`, `pyproject.toml`, lockfile, CI, code quality tools, and test directories.
-- [ ] Write the canonical Pydantic record types and terminology page.
+- [x] Write the canonical Pydantic record types and terminology page.
 
 ### Day 2
 
-- [ ] Implement the three-event priority-queue replay ordered by `available_time` — record arrival, prediction request, label reveal — with the boundary-inclusivity constant defined in exactly one module.
-- [ ] Add a synthetic measurement stream, revisable forecast stream, and delayed label stream.
-- [ ] Write ten named temporal scenarios and the stateless brute-force oracle of section 10.3 that scores them.
+- [x] Implement the three-event priority-queue replay ordered by `available_time` — record arrival, prediction request, label reveal — with the boundary-inclusivity constant defined in exactly one module.
+- [x] Add a synthetic measurement stream, revisable forecast stream, and delayed label stream.
+- [x] Write ten named temporal scenarios and the stateless brute-force oracle of section 10.3 that scores them.
 
 ### Day 3
 
-- [ ] Implement `last`, `lag`, `mean`, `variance`, `missing_count`, `staleness`, and forecast-selection operators.
-- [ ] Add lineage and eligibility checks.
-- [ ] Add property tests proving that future arrivals do not affect past outputs.
+- [x] Implement `last`, `lag`, `mean`, `variance`, `missing_count`, `staleness`, and forecast-selection operators.
+- [x] Add lineage and eligibility checks.
+- [x] Add property tests proving that future arrivals do not affect past outputs.
 
 ### Day 4
 

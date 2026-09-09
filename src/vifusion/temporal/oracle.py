@@ -28,7 +28,12 @@ import math
 from collections.abc import Sequence
 from datetime import datetime
 
-from vifusion.temporal.boundaries import in_trailing_window, is_visible
+from vifusion.temporal.boundaries import (
+    in_trailing_window,
+    is_label_usable,
+    is_visible,
+    within_staleness,
+)
 from vifusion.temporal.records import CanonicalRecord, RecordKind
 from vifusion.temporal.specs import (
     Aggregate,
@@ -127,7 +132,9 @@ def _last_value(
     if not observed:
         return _value(spec, None, ())
     newest = max(observed, key=_selection_key)
-    if spec.max_staleness is not None and prediction_time - newest.event_time > spec.max_staleness:
+    if spec.max_staleness is not None and not within_staleness(
+        newest.event_time, prediction_time, spec.max_staleness
+    ):
         return _value(spec, None, ())
     return _value(spec, newest.value, [newest])
 
@@ -269,8 +276,6 @@ def usable_labels(
     now: datetime,
 ) -> list[CanonicalRecord]:
     """Labels revealed by ``now`` and therefore usable for learning or scoring."""
-    from vifusion.temporal.boundaries import is_label_usable
-
     return sorted(
         (
             record
