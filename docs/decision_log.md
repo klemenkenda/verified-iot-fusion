@@ -174,3 +174,27 @@ recorded here, including whether it was made before or after viewing test result
   `test_lock_hash_does_not_require_git`.
 - **Made before or after viewing test results:** not applicable
 - **Phase / gate:** Phase 1
+
+### 2026-09-09 — Original `iot-fusion` audit completed
+
+- **Decision:** [`docs/original_system_audit.md`](original_system_audit.md) written from a
+  direct reading of the `klemenkenda/iot-fusion` source at the pinned revision `708053a`
+  (cloned to a scratch directory, read component by component, then discarded — nothing was
+  taken from summary or memory of the paper alone).
+- **Findings that affect later phases:** the original engine has no reusable temporal-
+  correctness machinery — window offsets are raw array-index arithmetic that silently
+  proceeds on a detected misalignment (`streamingNode.js` `setSlaveOffset`), late-data
+  handling is an inconsistent per-node-type monotonicity gate rather than a system policy,
+  event-time and arrival-time are never distinguished, and a written "out of order
+  measurements" test exists but is fully commented out. What *is* reusable is feature
+  **vocabulary** for the Phase 6 M2 expert baseline (measurement/autoregressive/date-time/
+  weather groups) and a handful of inline JSON fixtures/scenarios in the mocha test suite,
+  most notably the disabled out-of-order test as a candidate Phase 2 oracle scenario.
+- **Rationale:** The task explicitly could not be delegated away from a real read of the
+  code and paper; doing it directly (rather than summarizing without reading) is what makes
+  the preserve/correct/drop classification in the audit trustworthy for Phase 3 and Phase 6
+  decisions.
+- **Affected experiments / artifacts:** `docs/original_system_audit.md`; informs Phase 2
+  oracle scenario selection and the Phase 6 M2 baseline feature set.
+- **Made before or after viewing test results:** not applicable
+- **Phase / gate:** Phase 0
