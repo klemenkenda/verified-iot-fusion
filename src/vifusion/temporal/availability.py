@@ -5,9 +5,15 @@ availability model as simulated and store its parameters. Section 14 lists ambig
 availability times as a risk whose consequence is leakage or overstated realism, and the
 mitigation is to classify every timing field rather than to guess well.
 
-Phase 2 implements the two models the roadmap asks for — recorded and simulated. Bounded
-and inferred belong to Phase 5, where real dissemination windows are reconstructed for
-USCRN, and they raise here rather than silently degrading to a guess.
+Three of the four models section 12 names are implemented, and each has a dataset that uses
+it: ``recorded`` for Enefit, whose ``data_block_id`` states which records were delivered
+together; ``bounded`` for USCRN, whose availability must be reconstructed as an upper bound
+from the dissemination window of the update file a record arrived in; ``simulated`` for
+Beijing, which records no availability at all, and for USCRN's quality-controlled final
+products. ``inferred`` — availability estimated from an observed publication-lag
+distribution — has no consumer among the three committed datasets of section 8.6 and is
+therefore *not* implemented: it raises. Writing it now would add a model that nothing routes
+through, which is the defect this module was audited for in the first place.
 
 Every model reports :attr:`AvailabilityModel.parameters`, which the adapter stores in the
 run manifest's ``availability_parameters``. A simulated model whose parameters are not
@@ -85,15 +91,60 @@ class SimulatedAvailability(AvailabilityModel):
         return {"delay_seconds": self.delay.total_seconds()}
 
 
-def unsupported(name: AvailabilityModelName) -> AvailabilityModel:
-    """Availability models deferred to Phase 5.
+class BoundedAvailability(AvailabilityModel):
+    """Availability known only as an upper bound: the close of a dissemination window.
 
-    ``bounded`` and ``inferred`` require reconstructing dissemination windows from real
-    publication behaviour, which is Phase 5 work against USCRN. They raise rather than
-    approximating, because an availability model that quietly guesses is the failure this
-    module exists to prevent.
+    USCRN publishes hourly update files, and the file a record appears in states the window
+    during which it was disseminated. The record became usable at *some* instant inside that
+    window; the only defensible choice is its close, because any earlier instant claims a
+    delivery the archive does not evidence. Taking the close is conservative in the direction
+    that matters — it can only make a record eligible later than it truly was, never earlier,
+    so it cannot manufacture a leak. Section 8.2 calls this reconstructing an availability
+    upper bound, and it is the harder adapter problem the build order puts first.
+
+    The window close is supplied per record by the adapter, because only the adapter knows
+    which file the record arrived in. ``window`` names the containing window in the
+    parameters so that the derivation stays auditable after normalisation.
+    """
+
+    name: AvailabilityModelName = "bounded"
+
+    def __init__(self, window_description: str) -> None:
+        self.window_description = window_description
+
+    def available_time(self, event_time: datetime, recorded: datetime | None) -> datetime:
+        if recorded is None:
+            raise ValueError(
+                "bounded availability requires the close of the window the record was "
+                "disseminated in; without it there is no bound, only a guess"
+            )
+        if recorded < event_time:
+            raise ValueError(
+                f"dissemination window closes at {recorded.isoformat()}, before the "
+                f"observation at {event_time.isoformat()}; a record cannot be delivered "
+                "before it was measured, so either the window or the timestamp is misparsed"
+            )
+        return recorded
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {"window": self.window_description}
+
+
+def unsupported(name: AvailabilityModelName) -> AvailabilityModel:
+    """The availability model with no consumer: ``inferred``.
+
+    Inferring availability from an observed publication-lag distribution is a real model and
+    a defensible one, but none of the three datasets section 8.6 commits to needs it — Enefit
+    records its delivery blocks, USCRN bounds them, Beijing records nothing and is therefore
+    simulated. Implementing it anyway would produce a model that nothing imports and no test
+    exercises, which is exactly what the Phase 2 audit found and reopened.
+
+    It raises rather than approximating, because an availability model that quietly guesses
+    is the failure this module exists to prevent.
     """
     raise NotImplementedError(
-        f"availability model {name!r} is implemented in Phase 5 against real dissemination "
-        "windows; Phase 2 supports 'recorded' and 'simulated'"
+        f"availability model {name!r} has no implementation: no committed dataset requires "
+        "it. Use 'recorded', 'bounded', or 'simulated', or implement it here together with "
+        "the adapter that needs it"
     )

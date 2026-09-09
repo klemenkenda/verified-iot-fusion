@@ -14,16 +14,27 @@ import argparse
 import json
 import sys
 from collections.abc import Sequence
+from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from vifusion.config import ConfigError, config_hash, load_config
 from vifusion.environment import environment_lock_hash, git_state, hardware
 from vifusion.logging import configure_logging
 
+if TYPE_CHECKING:  # imported for types only: a command must not pay for an adapter it
+    # never runs, and `validate-config` in particular must have no import path to one.
+    from vifusion.adapters.base import DatasetBundle
+    from vifusion.adapters.registry import DatasetAdapter
+    from vifusion.temporal.records import CanonicalRecord
+
 EXIT_OK = 0
 EXIT_USAGE = 1
 EXIT_INVALID_CONFIG = 2
 EXIT_INVALID_PROGRAM = 3
+EXIT_INVALID_DATA = 4
+"""A dataset could not be read, or was read and found unsound. Distinct from a bad program:
+Phase 5 separates a defect in the data from a defect in what was asked of it."""
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -72,6 +83,53 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     corpus.add_argument("corpus", help="directory of labelled program YAML files")
     corpus.add_argument("--output", default=None, help="write the matrix here as JSON")
+
+    card = subcommands.add_parser(
+        "dataset-card",
+        help="read a dataset, validate it, and generate its card of checksums and ranges",
+    )
+    card.add_argument("dataset", help="registered dataset name: uscrn, enefit, beijing")
+    card.add_argument("--root", required=True, help="directory holding the raw files")
+    card.add_argument(
+        "--option",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="adapter option; required ones are named in the error when omitted",
+    )
+    card.add_argument("--output", default=None, help="write the card here as JSON")
+
+    dataset_replay = subcommands.add_parser(
+        "dataset-replay",
+        help="replay a compiled program over a dataset and explain every eligibility decision",
+    )
+    dataset_replay.add_argument("dataset", help="registered dataset name")
+    dataset_replay.add_argument("--root", required=True, help="directory holding the raw files")
+    dataset_replay.add_argument("--program", required=True, help="path to a YAML feature program")
+    dataset_replay.add_argument(
+        "--option", action="append", default=[], metavar="KEY=VALUE", help="adapter option"
+    )
+    dataset_replay.add_argument(
+        "--entity", default=None, help="entity to replay; defaults to the first in the dataset"
+    )
+    dataset_replay.add_argument(
+        "--every", default="1h", help="spacing of prediction requests, e.g. 30m"
+    )
+    dataset_replay.add_argument(
+        "--as-of",
+        default=None,
+        help=(
+            "replay as a reader holding the archive at this instant would have; records "
+            "disseminated later are applied afterwards as late arrivals"
+        ),
+    )
+    dataset_replay.add_argument(
+        "--late-policy",
+        default="ignore",
+        choices=["ignore", "revise", "retract"],
+        help="what a late record does to vectors already emitted; ignore keeps them immutable",
+    )
+    dataset_replay.add_argument("--output", default=None, help="write the audit here as JSON")
     return parser
 
 
@@ -264,6 +322,140 @@ def _audit(args: argparse.Namespace) -> int:
     return EXIT_OK if not matrix.false_acceptances else EXIT_INVALID_PROGRAM
 
 
+def _load_dataset(
+    args: argparse.Namespace,
+) -> tuple[DatasetAdapter, DatasetBundle] | None:
+    """Read a dataset through the registry, reporting an adapter error rather than raising."""
+    from vifusion.adapters import registry
+    from vifusion.adapters.base import AdapterError
+
+    try:
+        adapter = registry.get(args.dataset)
+        options = registry.parse_options(args.option)
+        return adapter, adapter.read(Path(args.root), options)
+    except AdapterError as error:
+        print(f"cannot read dataset: {error}", file=sys.stderr)
+        return None
+
+
+def _dataset_card(args: argparse.Namespace) -> int:
+    """Generate a dataset card. Every number in it comes from the records themselves."""
+    from vifusion.adapters import cards
+
+    loaded = _load_dataset(args)
+    if loaded is None:
+        return EXIT_INVALID_DATA
+    adapter, bundle = loaded
+
+    card = cards.build(bundle, license=adapter.license, homepage=adapter.homepage)
+    print(cards.summarise(card))
+    print(f"\ncard hash          {card.card_hash}")
+    if args.output:
+        destination = Path(args.output)
+        written = cards.write(destination, card)
+        print(f"written            {destination} ({written.sha256[:12]})")
+    # An unsound read exits non-zero: a card that records a naive timestamp or a record with
+    # no availability derivation is evidence of a defect, not a description of a dataset.
+    return EXIT_OK if card.report.healthy else EXIT_INVALID_DATA
+
+
+def _dataset_replay(args: argparse.Namespace) -> int:
+    """The Phase 5 exit criterion: a dataset replays end to end, with every decision explained."""
+    from vifusion.adapters.base import canonical_log, late_records
+    from vifusion.adapters.records_file import load_program
+    from vifusion.compiler.compile import compile_program, parse_program
+    from vifusion.dsl.schema import parse_duration
+    from vifusion.runtime import replay_audit, streaming
+    from vifusion.runtime.batch import BATCH_LOWERINGS
+    from vifusion.temporal.late_data import LateArrivalPolicy
+    from vifusion.temporal.replay import PredictionRequest
+
+    loaded = _load_dataset(args)
+    if loaded is None:
+        return EXIT_INVALID_DATA
+    _, bundle = loaded
+
+    program, diagnostics = parse_program(load_program(Path(args.program)))
+    if program is None:
+        for diagnostic in diagnostics:
+            print(str(diagnostic), file=sys.stderr)
+        return EXIT_INVALID_PROGRAM
+    compiled = compile_program(program, batch_lowerings=BATCH_LOWERINGS)
+    if not compiled.accepted or compiled.plan is None:
+        for diagnostic in compiled.diagnostics:
+            print(f"  {diagnostic}", file=sys.stderr)
+        return EXIT_INVALID_PROGRAM
+
+    entity = args.entity or (bundle.entity_ids[0] if bundle.entity_ids else None)
+    if entity is None:
+        print("the dataset produced no records", file=sys.stderr)
+        return EXIT_INVALID_DATA
+
+    log: list[CanonicalRecord] = list(canonical_log(bundle))
+    for_entity = [record for record in log if record.entity_id == entity]
+    if not for_entity:
+        print(f"no records for entity {entity!r}", file=sys.stderr)
+        return EXIT_INVALID_DATA
+
+    every = parse_duration(args.every)
+    first = min(record.available_time for record in for_entity)
+    last = max(record.available_time for record in for_entity)
+    requests: list[PredictionRequest] = []
+    moment = first
+    while moment <= last:
+        requests.append(PredictionRequest(entity, moment))
+        moment += every
+
+    audit_log: list[CanonicalRecord]
+    if args.as_of is None:
+        vectors = streaming.execute(compiled.plan, log, requests)
+        audit_log = log
+        outcome = None
+    else:
+        cutoff = datetime.fromisoformat(args.as_of)
+        held = list(bundle.records_available_by(cutoff))
+        late = list(late_records(held, log))
+        policy = LateArrivalPolicy(args.late_policy)
+        outcome = streaming.execute_with_late_records(
+            compiled.plan, held, requests, late, policy=policy
+        )
+        vectors = outcome.vectors
+        # The audit explains the vectors that were produced, so it reads the log they were
+        # produced from. Auditing against the full archive would report a late record as
+        # eligible at a time when the reader did not have it, which is the opposite of what
+        # an eligibility audit is for.
+        audit_log = [*held, *late] if policy is LateArrivalPolicy.REVISE else held
+
+    audits = [replay_audit.audit_vector(compiled.plan, audit_log, vector) for vector in vectors]
+    for audit in audits:
+        print(replay_audit.render(audit))
+    if outcome is not None:
+        print()
+        print(f"late records       {len(outcome.late_record_ids)} under policy {args.late_policy}")
+        print(f"affected vectors   {len(outcome.affected_prediction_times)}")
+        print(f"changed vectors    {len(outcome.changed_prediction_times)}")
+        print(f"retracted vectors  {len(outcome.retracted_prediction_times)}")
+
+    if args.output:
+        destination = Path(args.output)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "dataset": bundle.dataset,
+            "version": bundle.version,
+            "entity": entity,
+            "program_hash": compiled.program_hash,
+            "late_policy": args.late_policy,
+            "vectors": [audit.as_dict() for audit in audits],
+        }
+        destination.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        print(f"\nwritten            {destination}")
+    return EXIT_OK
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one command. Returns the process exit status rather than raising SystemExit."""
     configure_logging()
@@ -282,6 +474,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _bench(args)
     if args.command == "audit":
         return _audit(args)
+    if args.command == "dataset-card":
+        return _dataset_card(args)
+    if args.command == "dataset-replay":
+        return _dataset_replay(args)
     return EXIT_USAGE
 
 

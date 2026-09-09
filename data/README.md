@@ -33,3 +33,9 @@ Roles and commitments are defined in section 8 of the plan.
 
 Record the dataset version and the raw file hashes of every acquisition in the run
 manifest so a result can be traced back to the exact bytes it was computed from.
+`vifusion dataset-card` generates those hashes, along with time ranges, schema summaries and
+the availability derivation of every record.
+
+**[docs/datasets.md](../docs/datasets.md) is the operating manual**: what to download, where
+to put it, which commands to run, and — for each dataset — the one thing about its timing
+that has to be *declared* rather than discovered.

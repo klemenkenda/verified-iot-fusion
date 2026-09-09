@@ -1,0 +1,105 @@
+# A hand-written feature program for the USCRN update stream.
+#
+# The Phase 5 exit criterion asks that the three minimum datasets replay end to end *without
+# LLM-generated features*, so this is written by a human, on purpose. It is also the program
+# the delayed-delivery behaviour of section 8.2 is easiest to see through: the staleness and
+# missing-count nodes report what an hourly stream relayed several hours late actually looks
+# like at a prediction time, rather than assuming an observation exists.
+#
+# Its source declarations must agree with vifusion.adapters.uscrn.source_schemas(); a test
+# asserts that they do. A program that declared a unit or an arrival rate the adapter does
+# not produce would compile and then be wrong, which no run of it would reveal.
+schema_version: "0.1.0"
+name: uscrn_temperature
+
+sources:
+  - source_id: uscrn_update
+    feature_name: t_calc
+    kind: measurement
+    value_type: number
+    unit: degC
+    max_input_rate_per_hour: 4
+    description: Air temperature at the end of the hour.
+
+  - source_id: uscrn_update
+    feature_name: rh_hr_avg
+    kind: measurement
+    value_type: number
+    unit: percent
+    max_input_rate_per_hour: 4
+    description: Average relative humidity.
+
+  - source_id: uscrn_update
+    feature_name: solarad
+    kind: measurement
+    value_type: number
+    unit: watt / meter ** 2
+    max_input_rate_per_hour: 4
+    description: Average global solar radiation over the hour.
+
+nodes:
+  # What the station last told us, and how old that is. On a stream whose delivery can lag by
+  # hours, the second is not a diagnostic — it is a feature, because a six-hour-old reading
+  # and a fresh one are different evidence about the present.
+  - id: temp_now
+    op: last
+    params: {source: uscrn_update, feature: t_calc}
+  - id: temp_age
+    op: staleness
+    params: {source: uscrn_update, feature: t_calc}
+  - id: temp_fresh_3h
+    op: last
+    params: {source: uscrn_update, feature: t_calc, max_staleness: 3h}
+
+  - id: temp_mean_6h
+    op: mean
+    params: {source: uscrn_update, feature: t_calc, window: 6h}
+  - id: temp_min_6h
+    op: min
+    params: {source: uscrn_update, feature: t_calc, window: 6h}
+  - id: temp_max_6h
+    op: max
+    params: {source: uscrn_update, feature: t_calc, window: 6h}
+  - id: temp_lag_1h
+    op: lag
+    params: {source: uscrn_update, feature: t_calc, lag: 1h}
+
+  # How much of the last six hours actually arrived. An hourly stream should deliver six.
+  - id: temp_gaps_6h
+    op: missing_count
+    params: {source: uscrn_update, feature: t_calc, window: 6h, expected_interval: 1h}
+
+  - id: humidity_now
+    op: last
+    params: {source: uscrn_update, feature: rh_hr_avg}
+  - id: solar_mean_6h
+    op: mean
+    params: {source: uscrn_update, feature: solarad, window: 6h}
+
+  # Partial fusion within one source: the day's range so far, and where the latest reading
+  # sits against its own recent mean.
+  - id: temp_range_6h
+    op: subtract
+    inputs: [temp_max_6h, temp_min_6h]
+  - id: temp_anomaly
+    op: subtract
+    inputs: [temp_now, temp_mean_6h]
+
+  - id: hour
+    op: hour_of_day
+    params: {timezone: UTC}
+
+outputs:
+  - temp_now
+  - temp_age
+  - temp_fresh_3h
+  - temp_mean_6h
+  - temp_min_6h
+  - temp_max_6h
+  - temp_lag_1h
+  - temp_gaps_6h
+  - humidity_now
+  - solar_mean_6h
+  - temp_range_6h
+  - temp_anomaly
+  - hour

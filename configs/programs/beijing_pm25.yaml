@@ -1,0 +1,103 @@
+# A hand-written feature program for the Beijing air-quality stations.
+#
+# Section 8.4 uses this dataset for missing data, multi-station structure, and cross-domain
+# generalisation, so the program leans on the operators that report absence rather than hide
+# it: staleness, missing_count, and a bounded last-value that returns null instead of an old
+# reading. Under the 'staggered' arrival scenario the pollutant streams are three hours
+# behind the meteorological ones, and these are the features that make that visible.
+#
+# Availability here is simulated. Nothing in this program can tell you that; the dataset card
+# and the run manifest can, which is why both record the scenario by name.
+schema_version: "0.1.0"
+name: beijing_pm25
+
+sources:
+  - source_id: beijing_air
+    feature_name: pm2_5
+    kind: measurement
+    value_type: number
+    unit: microgram / meter ** 3
+    max_input_rate_per_hour: 2
+    description: Fine particulates.
+
+  - source_id: beijing_air
+    feature_name: temp
+    kind: measurement
+    value_type: number
+    unit: degC
+    max_input_rate_per_hour: 2
+    description: Air temperature.
+
+  - source_id: beijing_air
+    feature_name: wspm
+    kind: measurement
+    value_type: number
+    unit: meter / second
+    max_input_rate_per_hour: 2
+    description: Wind speed.
+
+  - source_id: beijing_air
+    feature_name: wd
+    kind: measurement
+    value_type: category
+    max_input_rate_per_hour: 2
+    description: Wind direction, as a compass label.
+
+nodes:
+  - id: pm25_now
+    op: last
+    params: {source: beijing_air, feature: pm2_5}
+  - id: pm25_age
+    op: staleness
+    params: {source: beijing_air, feature: pm2_5}
+  # Null rather than stale: past six hours a particulate reading says little about now, and a
+  # feature that keeps returning it looks confident about a stream that has gone quiet.
+  - id: pm25_fresh_6h
+    op: last
+    params: {source: beijing_air, feature: pm2_5, max_staleness: 6h}
+  - id: pm25_mean_6h
+    op: mean
+    params: {source: beijing_air, feature: pm2_5, window: 6h}
+  - id: pm25_max_24h
+    op: max
+    params: {source: beijing_air, feature: pm2_5, window: 24h}
+  - id: pm25_gaps_24h
+    op: missing_count
+    params: {source: beijing_air, feature: pm2_5, window: 24h, expected_interval: 1h}
+
+  - id: temp_now
+    op: last
+    params: {source: beijing_air, feature: temp}
+  - id: wind_now
+    op: last
+    params: {source: beijing_air, feature: wspm}
+  # A categorical last-value: the operator's output type follows its source, so this returns
+  # a compass label rather than a number, and no aggregate may be taken of it.
+  - id: wind_direction
+    op: last
+    params: {source: beijing_air, feature: wd}
+
+  - id: pm25_anomaly
+    op: subtract
+    inputs: [pm25_now, pm25_mean_6h]
+
+  - id: hour
+    op: hour_of_day
+    params: {timezone: Asia/Shanghai}
+  - id: weekend
+    op: is_weekend
+    params: {timezone: Asia/Shanghai}
+
+outputs:
+  - pm25_now
+  - pm25_age
+  - pm25_fresh_6h
+  - pm25_mean_6h
+  - pm25_max_24h
+  - pm25_gaps_24h
+  - temp_now
+  - wind_now
+  - wind_direction
+  - pm25_anomaly
+  - hour
+  - weekend

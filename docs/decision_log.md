@@ -657,3 +657,116 @@ freeze and expensive after it.
   clock, the oracle, and the verifier corpus. They affect Phase 5's claim that every normalized
   record has a documented derivation for `available_time`.
 - **Phase / gate:** Phase 2 tasks, carried to Phase 5
+
+### 2026-09-10 — Availability is derived through a model or not at all
+
+- **Decision:** `vifusion.adapters.base.normalise` is the only supported path from raw data to
+  a `CanonicalRecord`. It takes an availability *model* rather than an `available_time`, and it
+  stamps every record with an `AvailabilityDerivation` — model, rule, evidence, parameters —
+  inside `provenance`. `derivation_of` refuses a record that has none.
+- **Rationale:** Section 5.1 forbids silently substituting `event_time` for `available_time` and
+  requires an adapter with no recorded availability to label its model as simulated and store
+  its parameters. Phase 2 built the models and nothing routed through them, so the rule was a
+  docstring. Making the substitution *unwritable* — there is no parameter to pass — turns it
+  into an invariant. The derivation travels with the record rather than living only in the run
+  manifest because a manifest classifies the dataset, and a reviewer auditing one suspicious
+  feature value needs to know how *that* record's availability was obtained.
+- **The three datasets use three models, and that is the finding, not a detail:** USCRN is
+  `bounded` (the close of the dissemination window of the update file a record arrived in),
+  Enefit is `recorded` (`data_block_id` states which rows were delivered together, though the
+  block's wall-clock release is a declared parameter and the rule text says so), Beijing is
+  `simulated` (it records nothing, so the whole arrival regime is declared).
+- **`inferred` stays unimplemented and raises.** No committed dataset of section 8.6 needs it,
+  and writing it would produce exactly what the Phase 2 audit found: a model nothing imports.
+- **Regression tests:** `tests/adapters/test_availability_derivations.py`, over every record of
+  every adapter.
+- **Phase / gate:** Phase 5
+
+### 2026-09-10 — USCRN availability is the window close, and first dissemination wins
+
+- **Decision:** A USCRN record's `available_time` is the *close* of the hourly dissemination
+  window of the update file it appeared in. Where the archive carries the same observation
+  twice with different values, the first dissemination is kept and the later one is reported in
+  `DatasetBundle.superseded_record_ids` rather than merged.
+- **Rationale for the close:** the archive evidences the window, not the instant inside it.
+  Taking the open would claim a delivery an hour before there is any record of one; taking the
+  close can only make a record eligible later than it truly was, so the reconstruction cannot
+  manufacture a leak — it can only lose a little realism, which is the direction an error must
+  fall in.
+- **Rationale for first-wins:** section 8.2 forbids leaking later corrections into replay
+  inputs, and a later value replacing an earlier one *is* a later correction. Reporting them by
+  identifier matters because a correction dropped in silence is indistinguishable from one that
+  never arrived.
+- **Risk accepted:** `FIELD_COUNT` and the column indices are transcribed from the hourly02
+  documentation rather than verified against a real file. The adapter checks the width of every
+  row and refuses a mismatch, so the failure is loud; `docs/datasets.md` records the check as a
+  human step on first download.
+- **Phase / gate:** Phase 5
+
+### 2026-09-10 — Enefit targets split by `is_consumption`; prices are forecasts
+
+- **Decision:** the `target` column of `train.csv` becomes two features, `target_consumption`
+  and `target_production`. Electricity and gas prices are read as `forecast` records with
+  `issued_time` from `origin_date` and `valid_time` from `forecast_date`, not as measurements.
+- **Rationale:** both were found by the adapter's own validation report rather than by
+  inspection. Left as one feature, consumption and production are two records at the same
+  instant on one stream, and every aggregate over that stream silently mixes them — the
+  join-cardinality check is what surfaced it. Prices are forward-looking by construction: a
+  day-ahead price names an hour that has not happened, so as a measurement it would be
+  available before the instant it describes, which the canonical record refuses. It is a
+  forecast, and the forecast machinery already selects the latest issue eligible at a
+  prediction time.
+- **Currency is now a Pint dimension.** `euro = [currency]` is defined in the compiler, because
+  euros per megawatt-hour is a real unit and flattening it to dimensionless would let a price be
+  added to a temperature. A second currency would need a second dimension rather than a
+  conversion factor: this artifact has no exchange rate, and adding euros to dollars must fail.
+- **Regression tests:** `tests/adapters/test_adapter_validation.py`,
+  `test_a_forecast_operator_selects_the_latest_eligible_issue`.
+- **Phase / gate:** Phase 5
+
+### 2026-09-10 — Late arrival is a property of re-reading, and is wired to the runtime
+
+- **Decision:** `runtime.streaming.execute_with_late_records` runs a compiled program under a
+  declared `LateArrivalPolicy`, and `DatasetBundle.records_available_by` plus
+  `adapters.base.late_records` produce the late batch by reading one archive at two cutoffs.
+  `vifusion dataset-replay --as-of ... --late-policy ...` exposes it.
+- **Rationale:** the policies were defined in Phase 2 and reachable from nothing, so "use
+  immutable prior predictions for primary evaluation" was satisfied vacuously. Lateness cannot
+  occur *within* one replay — section 5.2.1 orders the queue by availability — so it only
+  becomes expressible when an archive is read twice, which is what a runtime does and what
+  USCRN produces natively.
+- **Every policy reports the affected vectors, IGNORE included.** Declining to rewrite an
+  output is a decision about what to publish, not a reason to stop knowing which outputs the
+  decision applied to.
+- **Defect found while wiring it:** the arithmetic fold dropped the `retracted` flag, so a
+  retracted vector would have published exactly the values the retraction withdrew, and every
+  assertion about those values would still have passed.
+- **Phase / gate:** Phase 5
+
+### 2026-09-10 — Targets are separated structurally, not by period
+
+- **Decision:** every adapter emits its targets as `label` records in their own source, and
+  `DatasetBundle.searchable_sources()` excludes those sources. `splits.assert_no_label_exposure`
+  checks the surface rather than the split.
+- **Rationale:** restricting a proposer to the training period would still leave the target
+  *stream* offerable as an input, and a feature reading the target at lag zero is not temporally
+  wrong — no analysis in section 10 would reject it, because nothing about it is late. Beijing
+  is the case that forces the point: forecasting PM2.5 means the label is a later PM2.5
+  observation, so the two streams carry identical values and only the source keeps them apart.
+- **Phase / gate:** Phase 5
+
+### 2026-09-10 — The replay audit explains withheld records, not only used ones
+
+- **Decision:** `runtime/replay_audit.py` reports, per feature, the records that contributed
+  *and* the nearest records the clock had not released, both with their availability
+  derivations, and distinguishes "nothing released yet on this stream" from "records were
+  released, none of them what this operator asked for".
+- **Rationale:** the Phase 5 acceptance test asks why each source value *was* eligible, but the
+  question a debugging session starts from is why a feature is null — and a null feature has no
+  lineage, so an audit built from lineage alone says nothing about it.
+- **Defect found by writing it:** the audit first read stream keys straight from the compiled
+  plan, where a node carries an empty entity id until execution binds it (section 5.3). The keys
+  matched no record, so every stream-based explanation came back empty rather than wrong — an
+  audit failing by saying nothing, which is the hardest failure to notice. Pinned by
+  `test_the_audit_reads_the_stream_the_feature_actually_reads`.
+- **Phase / gate:** Phase 5

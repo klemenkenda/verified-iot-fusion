@@ -90,6 +90,13 @@ LLM, run end to end through replay, features, prediction, and scoring, emitting 
 manifest and a script-generated table. Its purpose is to break the evaluation pipeline now
 rather than during the Phase 8 pilot.
 
+**Its first half is done** (Phase 5): USCRN reads, replays, and audits end to end through
+`vifusion dataset-replay`, against format-faithful fixtures rather than the real archive.
+What the slice still needs is the second half — a model, a score, and a run manifest that
+carries the dataset card's raw hashes and the frozen split's hash. The human step in between
+is a real download: see `docs/datasets.md` for the three things only a real file can
+confirm.
+
 ### Gate A
 
 Named leakage cases all prevented; batch and stream agree within the declared tolerance

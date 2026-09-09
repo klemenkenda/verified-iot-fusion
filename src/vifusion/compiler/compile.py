@@ -64,6 +64,14 @@ from vifusion.temporal.specs import (
 # units leave this module as strings and never enter the runtime (section 6).
 _UNITS: Any = pint.UnitRegistry()
 
+# Pint ships no currency dimension, and the Enefit price streams of section 8.1 have one:
+# euros per megawatt-hour is a real unit and flattening it to dimensionless would let a price
+# be added to a temperature. Currency is defined as its own base dimension because that is
+# what it is — two currencies are not interconvertible without a rate this artifact does not
+# have, so a second currency would need a second dimension rather than a conversion factor,
+# and adding euros to dollars must fail rather than silently pick one.
+_UNITS.define("euro = [currency] = EUR")
+
 DIMENSIONLESS = ""
 """The unit of a count: dimensionless, and distinct from "unknown"."""
 

@@ -713,10 +713,10 @@ Exit criteria continue to govern progress more strongly than elapsed time.
 
 - [x] Implement canonical records and the replay clock as the three-event priority queue of section 5.2.1, with the boundary-inclusivity constant defined in exactly one module.
 - [x] Implement measurement, static, forecast, and label streams.
-- [ ] Implement recorded and simulated availability models. *(Deliberately reopened after the Phase 2 audit: `src/vifusion/temporal/availability.py` defines both models, but no module imports it and no test exercises it — every `available_time` in the system is supplied directly by a fixture or the synthetic generator. The enforcement point section 5.1 asks for — an adapter that must label its availability model as simulated and store its parameters — cannot exist until an adapter routes through it, so this is carried to Phase 5 with its consumer.)*
+- [x] Implement recorded and simulated availability models. *(Reopened after the Phase 2 audit — both models existed and nothing imported them — and closed in Phase 5, where the adapters became their consumer. `adapters/base.normalise` is now the only supported path from raw data to a canonical record, and it cannot produce one without an availability derivation, so section 5.1's rule is an invariant rather than a docstring. Phase 5 added `bounded` for USCRN; `inferred` is deliberately still unimplemented and raises, because no committed dataset needs it.)*
 - [x] Build the slow reference oracle.
 - [x] Add named leakage scenarios and property tests.
-- [x] Define late-data policies: ignore for prior output, revise, or retract. Use immutable prior predictions for primary evaluation. *(Defined and unit-tested in `src/vifusion/temporal/late_data.py`, but reachable from no runtime or CLI path: the "immutable prior predictions" half is satisfied vacuously while there is no evaluation path to violate it. Wired in Phase 5 alongside the availability models.)*
+- [x] Define late-data policies: ignore for prior output, revise, or retract. Use immutable prior predictions for primary evaluation. *(Defined in Phase 2 and wired in Phase 5: `runtime.streaming.execute_with_late_records` runs a compiled program under a declared policy, `vifusion dataset-replay --as-of` produces the late records natively by reading the USCRN archive at two cutoffs, and the integration suite exercises all three policies against them.)*
 
 **Acceptance tests**
 
@@ -770,22 +770,22 @@ This phase was originally a two-week parity project. It is reduced because its e
 
 **Tasks**
 
-- [ ] Implement the USCRN update-file adapter and final-target separation **first**. It is small, freely downloadable without competition terms, and its availability must be *reconstructed* from dissemination windows rather than read off a delivered identifier — the harder adapter problem and the more novel artifact. Build the adapter machinery here.
-- [ ] Implement the Enefit adapter and competition-style availability replay second. `data_block_id` hands availability to you, so it exercises less of the machinery despite Enefit being the primary predictive dataset.
-- [ ] Implement Beijing adapter and declared simulated-arrival scenarios.
-- [ ] Route every adapter through the Phase 2 availability models and the late-data policies, which were built ahead of their consumer and are unreachable until now. This is the task that turns "availability is simulated here, with these parameters" from a docstring into something a record carries.
-- [ ] Optionally implement HRRR/Open-Meteo forecast-run extraction.
-- [ ] Generate dataset cards, checksums, time ranges, schema summaries, licenses, and provenance.
-- [ ] Create frozen train/validation/test manifests.
+- [x] Implement the USCRN update-file adapter and final-target separation **first**. It is small, freely downloadable without competition terms, and its availability must be *reconstructed* from dissemination windows rather than read off a delivered identifier — the harder adapter problem and the more novel artifact. Build the adapter machinery here.
+- [x] Implement the Enefit adapter and competition-style availability replay second. `data_block_id` hands availability to you, so it exercises less of the machinery despite Enefit being the primary predictive dataset.
+- [x] Implement Beijing adapter and declared simulated-arrival scenarios.
+- [x] Route every adapter through the Phase 2 availability models and the late-data policies, which were built ahead of their consumer and are unreachable until now. This is the task that turns "availability is simulated here, with these parameters" from a docstring into something a record carries.
+- [ ] Optionally implement HRRR/Open-Meteo forecast-run extraction. *(Not done, and not needed: Enefit's archived `forecast_weather` rows already give the compiler a revisable forecast stream with real issue times, which is what the forecast-selection claim needs. Revisit only if a second forecast source earns its cost.)*
+- [x] Generate dataset cards, checksums, time ranges, schema summaries, licenses, and provenance. *(`vifusion dataset-card`; every figure is derived from the records, never transcribed.)*
+- [x] Create frozen train/validation/test manifests. *(`configs/splits/`, hashed into the run manifest as `split_manifest_hash`. The entity identifiers in them are placeholders chosen for shape and each file says so; confirm them against the real inventories before the final sweep.)*
 
 **Acceptance tests**
 
-- [ ] Adapter tests validate row counts, ranges, time zones, duplicates, missingness, and join cardinality.
-- [ ] Every normalized record has a documented derivation for `available_time`.
-- [ ] A replay audit can explain why each source value was eligible.
-- [ ] No test labels are exposed through the feature-search interface.
+- [x] Adapter tests validate row counts, ranges, time zones, duplicates, missingness, and join cardinality. *(`adapters/base.validate` reports all six; the join check is what found that Enefit's `target` column is two quantities in one stream.)*
+- [x] Every normalized record has a documented derivation for `available_time`. *(Carried in `provenance` by every record of every adapter, and checked over all of them rather than argued.)*
+- [x] A replay audit can explain why each source value was eligible. *(`runtime/replay_audit.py`, which also explains why a value was *withheld* — the half a debugging session actually starts from, since a null feature has no lineage.)*
+- [x] No test labels are exposed through the feature-search interface. *(Structural: targets are `label` records in their own source and `searchable_sources()` excludes them. A period restriction would not do it — a feature reading the target at lag zero is not temporally wrong, so no analysis in section 10 would reject it.)*
 
-**Exit criterion:** The three minimum datasets replay end to end without LLM-generated features.
+**Exit criterion:** The three minimum datasets replay end to end without LLM-generated features. *(Met against format-faithful fixtures: `tests/integration/test_dataset_end_to_end.py` reads each dataset, compiles a hand-written program from `configs/programs/`, replays it, and audits every eligibility decision. The remaining human step is running the same commands against the real downloads and confirming each adapter's transcribed format constants — see `docs/datasets.md`.)*
 
 ### Phase 6 — Baselines (effort weeks 8–9)
 

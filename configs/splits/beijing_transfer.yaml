@@ -1,0 +1,39 @@
+# Frozen split for the Beijing cross-domain and unseen-station experiments (section 8.4).
+#
+# Section 8.4 asks for later chronological periods as the test set and complete stations held
+# out for transfer. Both are here, and they compose: a held-out station is absent from
+# training in every period, so a transfer result cannot be explained by having seen the
+# station earlier.
+schema_version: "0.1.0"
+name: beijing_transfer
+dataset: beijing_multi_site_air_quality
+version: uci-501
+
+gap: P7D
+
+train:
+  start: "2013-03-01T00:00:00+08:00"
+  end: "2016-03-01T00:00:00+08:00"
+validation:
+  start: "2016-03-08T00:00:00+08:00"
+  end: "2016-09-01T00:00:00+08:00"
+test:
+  start: "2016-09-08T00:00:00+08:00"
+  end: "2017-03-01T00:00:00+08:00"
+
+# Two of the twelve stations, withheld whole.
+held_out_entities:
+  - "Changping"
+  - "Dingling"
+
+rationale: >-
+  Boundaries are stated in Asia/Shanghai because the dataset's year/month/day/hour columns
+  are local time; writing them in UTC would put a fold boundary in the middle of a local day
+  for no reason a reader could see.
+
+notes:
+  - "Availability in this dataset is simulated. A result is only interpretable beside the
+     arrival scenario it was produced under, which the dataset card and the run manifest both
+     record."
+  - "The two held-out stations are among the twelve in the UCI release; confirm the spelling
+     of the station names against the files before the final sweep."

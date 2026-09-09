@@ -1,0 +1,97 @@
+# A hand-written feature program for one Enefit prediction unit.
+#
+# The heterogeneous fusion of section 8.1 in miniature: a measured weather stream, a
+# forward-looking price stream, a static contract fact, and a date/time feature, combined
+# into one vector for one prosumer. The target does not appear, and cannot — train.csv enters
+# as label records in a source the feature-search surface excludes.
+#
+# Two operators here read *forward-looking* records. A day-ahead price and a weather forecast
+# both describe instants that have not happened, and both are selected by the issue that was
+# actually eligible at the prediction time. That selection is the point of the whole exercise:
+# an implementation that grouped by valid time and took the last issue would leak, and would
+# look exactly like this program while doing it.
+schema_version: "0.1.0"
+name: enefit_consumption
+
+sources:
+  - source_id: enefit_weather_actual
+    feature_name: temperature
+    kind: measurement
+    value_type: number
+    unit: degC
+    max_input_rate_per_hour: 4
+    description: Measured weather at a grid point.
+
+  - source_id: enefit_weather_forecast
+    feature_name: temperature
+    kind: forecast
+    value_type: number
+    unit: degC
+    max_input_rate_per_hour: 4
+    max_forecast_horizon: 72h
+    description: Archived weather forecast, revisable by later issues.
+
+  - source_id: enefit_electricity
+    feature_name: euros_per_mwh
+    kind: forecast
+    value_type: number
+    unit: euro / megawatt_hour
+    max_input_rate_per_hour: 4
+    max_forecast_horizon: 48h
+    description: Day-ahead electricity price for the hour it names.
+
+  - source_id: enefit_client
+    feature_name: installed_capacity
+    kind: static
+    value_type: number
+    unit: kilowatt
+    max_input_rate_per_hour: 4
+    description: Installed capacity of a prediction unit.
+
+nodes:
+  - id: temp_now
+    op: last
+    params: {source: enefit_weather_actual, feature: temperature}
+  - id: temp_mean_24h
+    op: mean
+    params: {source: enefit_weather_actual, feature: temperature, window: 24h}
+  - id: temp_age
+    op: staleness
+    params: {source: enefit_weather_actual, feature: temperature}
+
+  # The latest issue eligible now, for the hour one ahead of now.
+  - id: temp_fc_1h
+    op: forecast
+    params: {source: enefit_weather_forecast, feature: temperature, lead: 1h}
+  - id: price_fc_1h
+    op: forecast
+    params: {source: enefit_electricity, feature: euros_per_mwh, lead: 1h}
+
+  - id: capacity
+    op: last
+    params: {source: enefit_client, feature: installed_capacity}
+
+  # Full fusion across sources: how wrong the forecast stream currently is about the measured
+  # one. Both sides are eligible at the same instant, which is what makes the difference
+  # meaningful rather than a comparison across time.
+  - id: temp_fc_bias
+    op: subtract
+    inputs: [temp_fc_1h, temp_now]
+
+  - id: hour
+    op: hour_of_day
+    params: {timezone: Europe/Tallinn}
+  - id: weekend
+    op: is_weekend
+    params: {timezone: Europe/Tallinn}
+
+outputs:
+  - temp_now
+  - temp_mean_24h
+  - temp_age
+  - temp_fc_1h
+  - price_fc_1h
+  - capacity
+  - temp_fc_bias
+  - hour
+  - weekend

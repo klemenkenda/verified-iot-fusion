@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from vifusion.cli import EXIT_INVALID_CONFIG, EXIT_OK, main
+from vifusion.cli import EXIT_INVALID_CONFIG, EXIT_INVALID_DATA, EXIT_OK, main
 
 
 def test_validate_config_accepts_the_checked_in_config(
@@ -74,3 +74,135 @@ def test_run_writes_artifacts_and_manifest(
 def test_unknown_command_is_a_usage_error(minimal_config_path: Path) -> None:
     with pytest.raises(SystemExit):
         main(["nonexistent"])
+
+
+# --- Phase 5: the dataset commands -----------------------------------------------------------
+
+DATASETS = Path(__file__).resolve().parents[1] / "fixtures" / "datasets"
+PROGRAMS = Path(__file__).resolve().parents[2] / "configs" / "programs"
+
+
+def test_dataset_card_reports_checksums_and_availability(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    destination = tmp_path / "card.json"
+    status = main(
+        [
+            "dataset-card",
+            "uscrn",
+            "--root",
+            str(DATASETS / "uscrn"),
+            "--option",
+            "final=final/CRNH0203-2024-CO_Boulder_14_W.txt",
+            "--output",
+            str(destination),
+        ]
+    )
+    assert status == EXIT_OK
+    out = capsys.readouterr().out
+    assert "availability by model" in out
+    assert "bounded" in out and "simulated" in out
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+    assert payload["raw_files"]
+    assert payload["validation"]["naive_timestamps"] == []
+
+
+def test_dataset_card_refuses_a_dataset_whose_options_are_missing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Beijing records no availability, so its arrival scenario has no default.
+
+    The command reports what is missing and why rather than reading the dataset under an
+    assumption nobody chose.
+    """
+    status = main(["dataset-card", "beijing", "--root", str(DATASETS / "beijing")])
+    assert status == EXIT_INVALID_DATA
+    error = capsys.readouterr().err
+    assert "arrival" in error
+    assert "records no availability" in error
+
+
+def test_dataset_replay_explains_every_eligibility_decision(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    status = main(
+        [
+            "dataset-replay",
+            "beijing",
+            "--root",
+            str(DATASETS / "beijing"),
+            "--program",
+            str(PROGRAMS / "beijing_pm25.yaml"),
+            "--option",
+            "arrival=staggered",
+            "--every",
+            "3h",
+        ]
+    )
+    assert status == EXIT_OK
+    out = capsys.readouterr().out
+    assert "availability rules" in out
+    assert "simulated" in out
+    # The scenario name reaches the output, because a result under one arrival regime must
+    # not be readable as a result under another.
+    assert "staggered" in out
+
+
+def test_dataset_replay_applies_a_late_policy(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The late-data path, reachable from the command line rather than from a test only."""
+    destination = tmp_path / "audit.json"
+    status = main(
+        [
+            "dataset-replay",
+            "uscrn",
+            "--root",
+            str(DATASETS / "uscrn"),
+            "--program",
+            str(PROGRAMS / "uscrn_temperature.yaml"),
+            "--every",
+            "2h",
+            "--as-of",
+            "2024-01-01T03:00:00Z",
+            "--late-policy",
+            "revise",
+            "--output",
+            str(destination),
+        ]
+    )
+    assert status == EXIT_OK
+    out = capsys.readouterr().out
+    assert "late records" in out
+    assert "affected vectors" in out
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+    assert payload["late_policy"] == "revise"
+    assert payload["vectors"]
+
+
+def test_dataset_replay_rejects_an_uncompilable_program(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A defect in the program is reported as a program defect, not as a data defect."""
+    from vifusion.cli import EXIT_INVALID_PROGRAM
+
+    broken = tmp_path / "broken.yaml"
+    broken.write_text(
+        "schema_version: '0.1.0'\nname: broken\nsources: []\n"
+        "nodes: [{id: x, op: nonesuch, params: {}}]\noutputs: [x]\n",
+        encoding="utf-8",
+    )
+    status = main(
+        [
+            "dataset-replay",
+            "beijing",
+            "--root",
+            str(DATASETS / "beijing"),
+            "--program",
+            str(broken),
+            "--option",
+            "arrival=prompt",
+        ]
+    )
+    assert status == EXIT_INVALID_PROGRAM
+    assert "nonesuch" in capsys.readouterr().err

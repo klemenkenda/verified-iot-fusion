@@ -10,15 +10,25 @@ Execution is two layers. Leaf nodes lower to the Phase 2 specs and run through t
 clock, which enforces eligibility once. Arithmetic nodes then fold over the resulting values
 in topological order; they read no records at all, so they cannot introduce a leak that the
 clock did not already permit.
+
+:func:`execute_with_late_records` is the same path under a declared late-arrival policy. It
+is here rather than beside the policies themselves because lateness is a property of
+*re-reading* an archive, which only a runtime does: within one replay, the availability
+ordering makes lateness impossible by construction (section 5.2.1). The default policy is
+IGNORE, which is what makes prior predictions immutable — a system that silently revises what
+it predicted yesterday cannot be evaluated, because the prediction being scored is no longer
+the prediction that was made.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 
 from vifusion.compiler.compile import ExecutionPlan
 from vifusion.runtime.arithmetic import combine
+from vifusion.temporal.late_data import LateArrivalPolicy, apply_late_records
 from vifusion.temporal.records import CanonicalRecord
 from vifusion.temporal.replay import PredictionRequest, replay
 from vifusion.temporal.specs import FeatureValue, FeatureVector
@@ -86,6 +96,87 @@ def execute_detailed(
     )
 
 
+@dataclass(frozen=True)
+class LateExecutionResult:
+    """Vectors produced under a declared late-arrival policy, and what the policy did."""
+
+    vectors: tuple[FeatureVector, ...]
+    policy: LateArrivalPolicy
+    late_record_ids: tuple[str, ...]
+
+    affected_prediction_times: tuple[datetime, ...]
+    """Vectors a late record would have contributed to, had it arrived in time.
+
+    Reported under every policy, IGNORE included. That is the point: choosing to leave prior
+    outputs untouched is a decision about what to publish, not a reason to stop knowing which
+    ones the decision applied to."""
+
+    changed_prediction_times: tuple[datetime, ...] = ()
+    """Vectors whose values actually moved. Empty unless the policy is REVISE."""
+
+    peak_state_records: int = 0
+
+    @property
+    def retracted_prediction_times(self) -> tuple[datetime, ...]:
+        return tuple(vector.prediction_time for vector in self.vectors if vector.retracted)
+
+
+def execute_with_late_records(
+    plan: ExecutionPlan,
+    log: Sequence[CanonicalRecord],
+    requests: Sequence[PredictionRequest],
+    late: Sequence[CanonicalRecord],
+    *,
+    policy: LateArrivalPolicy = LateArrivalPolicy.IGNORE,
+    state_bound: int | None = None,
+) -> LateExecutionResult:
+    """Replay a compiled program, then apply records that arrived after the vectors were out.
+
+    ``late`` is what a second, later read of the same archive contains and the first did not —
+    see :func:`vifusion.adapters.base.late_records`. Handing them in as a separate batch
+    rather than merging them into the log is the whole distinction: merged, they would simply
+    have been eligible, and the question of what to do about a prediction already published
+    would never arise.
+    """
+    effective_bound = plan.max_stream_records if state_bound is None else state_bound
+    by_entity: dict[str, list[PredictionRequest]] = {}
+    for request in requests:
+        by_entity.setdefault(request.entity_id, []).append(request)
+
+    produced: dict[tuple[str, datetime], FeatureVector] = {}
+    affected: set[datetime] = set()
+    changed: set[datetime] = set()
+    late_ids: list[str] = []
+    peak = 0
+
+    for entity_id, entity_requests in by_entity.items():
+        outcome = apply_late_records(
+            log,
+            entity_requests,
+            plan.specs_for(entity_id),
+            late,
+            policy=policy,
+            state_bound=effective_bound,
+        )
+        affected.update(outcome.affected_prediction_times)
+        changed.update(outcome.changed_prediction_times)
+        late_ids.extend(outcome.late_record_ids)
+        peak = max(peak, outcome.result.peak_state_records)
+        for vector in outcome.result.vectors:
+            produced[(entity_id, vector.prediction_time)] = _fold(plan, vector)
+
+    return LateExecutionResult(
+        vectors=tuple(
+            produced[(request.entity_id, request.prediction_time)] for request in requests
+        ),
+        policy=policy,
+        late_record_ids=tuple(sorted(set(late_ids))),
+        affected_prediction_times=tuple(sorted(affected)),
+        changed_prediction_times=tuple(sorted(changed)),
+        peak_state_records=peak,
+    )
+
+
 def _fold(plan: ExecutionPlan, leaves: FeatureVector) -> FeatureVector:
     """Evaluate arithmetic nodes over leaf values, then project to the declared outputs."""
     values: dict[str, FeatureValue] = {value.name: value for value in leaves.values}
@@ -101,4 +192,7 @@ def _fold(plan: ExecutionPlan, leaves: FeatureVector) -> FeatureVector:
         entity_id=leaves.entity_id,
         prediction_time=leaves.prediction_time,
         values=tuple(values[node_id] for node_id in plan.outputs),
+        # Carried through rather than defaulted: a retracted vector that folded into an
+        # unretracted one would publish exactly the values the retraction withdrew.
+        retracted=leaves.retracted,
     )

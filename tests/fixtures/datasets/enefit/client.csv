@@ -1,0 +1,5 @@
+product_type,county,eic_count,installed_capacity,is_business,date,data_block_id,prediction_unit_id
+1,0,108,952.89,0,2021-09-01,1,7
+3,0,17,1411.0,1,2021-09-01,1,9
+1,0,108,952.89,0,2021-09-02,2,7
+3,0,18,1490.0,1,2021-09-02,2,9
