@@ -1,0 +1,38 @@
+# M0 — the forecasting floor for USCRN station temperature.
+#
+# A naive forecast written as a feature program rather than as a separate code path, and that
+# is the whole point. If M0 were computed by its own routine it could read an instant the
+# replay clock had not released — and a floor that quietly sees the future is worse than no
+# floor, because every method above it then looks unimpressive for the wrong reason.
+#
+# Two naive forecasts are emitted. `persistence` is the last hourly-mean temperature the
+# station actually delivered; `seasonal` is the value from twenty-four hours before the
+# prediction time, which is the honest naive forecast for a quantity with a daily cycle.
+# Section 9.1 names M0 as "seasonal naive / persistence"; the task config picks which one is
+# the prediction, and the other rides along as a diagnostic.
+#
+# Note what this floor is *not* allowed to do: read the quality-controlled final product. That
+# is the target, and it is a label source the feature surface excludes.
+schema_version: "0.1.0"
+name: uscrn_m0_naive
+
+sources:
+  - source_id: uscrn_update
+    feature_name: t_hr_avg
+    kind: measurement
+    value_type: number
+    unit: degC
+    max_input_rate_per_hour: 4
+    description: Average air temperature over the hour, as disseminated.
+
+nodes:
+  - id: persistence
+    op: last
+    params: {source: uscrn_update, feature: t_hr_avg}
+  - id: seasonal
+    op: lag
+    params: {source: uscrn_update, feature: t_hr_avg, lag: 24h}
+
+outputs:
+  - persistence
+  - seasonal

@@ -770,3 +770,103 @@ freeze and expensive after it.
   audit failing by saying nothing, which is the hardest failure to notice. Pinned by
   `test_the_audit_reads_the_stream_the_feature_actually_reads`.
 - **Phase / gate:** Phase 5
+
+### 2026-09-10 — Gate A passed
+
+- **Decision:** Gate A is passed. The project proceeds to Phase 6 and, after it, to the LLM
+  proposal loop. Decided by the researcher on 2026-09-10.
+- **The mechanical condition was met before the decision.** Section 15 requires that the
+  temporal core prevent all named leakage cases and that batch and streaming agree within the
+  declared parity tolerance with exact agreement on lineage. As of the Phase 5 work: 76 named
+  scenarios pass against both the engine and the structurally independent oracle; the
+  Hypothesis parity suite holds within the per-operator ULP budgets with lineage compared
+  exactly; the H2b confusion matrix over a 50-program labelled corpus reports 0% false
+  rejection and 100% leak detection, with no malformed program landing in the E-TIME row;
+  measured peak state stays within the compiled bound.
+- **The judgement was made on that evidence.** Section 15 also asks whether the
+  correctness-and-benchmark paper of Gate D is already viable on the evidence produced so far.
+  The researcher answered yes.
+- **Made before or after viewing test results:** before any H1 result exists, and before any
+  LLM has been connected. That is the point of the gate — the fallback paper is judged viable
+  while its viability is still a prediction rather than a consolation.
+- **Known exposure, accepted:** `docs/novelty.md` remains *provisionally* accepted. It was to
+  freeze at this gate and has not been verified by the researcher against the sources, so two
+  passages carry unquantified risk: the **Feast narrowing** of contribution 1, which reduces a
+  claim unilaterally, and the **OCTree-on-Enefit** framing, which sets the bar H1 must clear.
+  Gate A is passed on the strength of the *engineering* evidence; the *novelty* argument
+  underneath the fallback paper rests on an assistant's reading that nobody has re-derived.
+  This is [R-03](risk_register.md) in its exact predicted form. It remains open and is now
+  overdue; the earliest sensible forcing point is Gate C, where the protocol freezes.
+- **Phase / gate:** Gate A
+
+### 2026-09-10 — A method is a feature program plus a predictor, M0 included
+
+- **Decision:** every row of the M0–M8 grid is declared as a feature program plus a predictor,
+  in a task configuration file whose hash is the manifest's `task_config_hash`. The naive
+  floor is a one-node program — `last` for persistence, `lag 24h` for seasonal — read through
+  an `identity` predictor that returns that node unchanged.
+- **Rationale:** the obvious alternative is to compute M0 in a few lines beside the pipeline,
+  and that creates a second path to a prediction, one that reads records without going through
+  the replay clock. A floor that quietly sees a fresher observation than the methods above it
+  makes every one of them look worse, and nothing in the results table would show it. Section
+  9.1 makes M0 a *required* floor; this makes it the same kind of object as everything it is
+  the floor for.
+- **Consequence, and it is a finding rather than a cost:** on USCRN the naive floor is
+  genuinely weaker than the textbook one. Availability is the close of the dissemination
+  window, so at prediction time `t` the newest eligible observation has event time `t - 1h`,
+  and a one-hour-ahead forecast is really predicting two hours out from the last data anyone
+  had. M0's MASE lands near 2 rather than near 1, and that gap *is* the delayed-delivery
+  phenomenon the dataset was chosen to expose.
+- **Phase / gate:** Phase 6, vertical slice
+
+### 2026-09-10 — MASE is scaled per entity, from training targets only
+
+- **Decision:** the MASE denominator is computed per entity, from that entity's own
+  chronologically ordered training targets, and only from targets revealed by the training
+  cutoff. `metrics.score` takes a scale per group and refuses to score an entity it has no
+  scale for.
+- **Rationale:** found by the first run of the vertical slice. The initial implementation
+  pooled the rows, which are ordered entity-major, so the "naive forecast error" it computed
+  included the step from one station's last hour to the next station's first hour as though it
+  were a change in the weather. The number was plausible and wrong, which is the shape of
+  defect this project exists to make hard.
+- **A second question the same run forced:** a held-out entity is scored but never fitted on,
+  so it has no *training* rows in the fitting set — and the first fix crashed on it. The scale
+  is a property of the series, not an input to any model, so scales are computed over every
+  entity's training-period targets while the fitting rows remain the subset the split allows.
+  Without that, a transfer result on a held-out station could not be compared to anything.
+- **Regression tests:** `test_mase_uses_each_entity_scale_rather_than_a_pooled_one`,
+  `test_an_entity_with_no_scale_is_reported_rather_than_averaged_over`.
+- **Phase / gate:** Phase 6, vertical slice
+
+### 2026-09-10 — Ridge is written out rather than imported, for now
+
+- **Decision:** the linear reference is ridge regression by normal equations in pure Python,
+  with standardisation and missing-value imputation computed from the training rows only.
+  NumPy, scikit-learn and LightGBM stay out of the dependency tree until the full Phase 6 grid
+  needs the nonlinear reference.
+- **Rationale:** two properties the project has already paid for elsewhere. Determinism — a
+  BLAS may sum in whatever order its threading chooses, and section 12 asks for byte-identical
+  reruns. Auditability — the ridge penalty applying to slopes but not the intercept, and the
+  fact that the scaler's statistics come from training rows only, are visible rather than
+  delegated. The scaler point is not pedantry: fitting a scaler across train and test is a leak
+  that no temporal analysis catches, because nothing about it is late.
+- **Reversal condition:** when LightGBM lands for the nonlinear reference it brings NumPy
+  anyway, and at that point a scikit-learn ridge is a reasonable swap — provided the
+  determinism check still passes and the scaler stays train-only.
+- **Phase / gate:** Phase 6, vertical slice
+
+### 2026-09-10 — Fitting obeys the label reveal, and the count is reported
+
+- **Decision:** a model may fit only on examples whose target was revealed by the end of the
+  training period, through `tasks.revealed_by`, which routes the comparison through
+  `boundaries.is_label_usable` rather than writing it out. Every result reports
+  `train_examples_withheld` — how many examples inside the training period were excluded
+  because their labels had not been published.
+- **Rationale:** this is the Phase 2 acceptance test *delayed labels update models only after
+  `label_available_time`*, which until now was only half-testable because no models existed.
+  The leak it prevents is invisible to every feature-level check: the features of a withheld
+  example are perfectly eligible, the vector is correct, and the model still saw an outcome
+  that had not happened. Reporting the count rather than only enforcing the rule is what makes
+  a pipeline that silently stopped enforcing it detectable — the number would go to zero.
+- **Phase / gate:** Phase 6, vertical slice

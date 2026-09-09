@@ -789,18 +789,29 @@ This phase was originally a two-week parity project. It is reduced because its e
 
 ### Phase 6 — Baselines (effort weeks 8–9)
 
+*(In progress. The vertical slice section 11.0 asks for by effort-week 7 is done: USCRN, the
+one-hour temperature task, M0 to M2, no LLM, end to end through replay, features, fitting and
+scoring, emitting a run manifest and a generated table. `vifusion evaluate` runs it.)*
+
 **Tasks**
 
-- [ ] Implement M0–M4.
+- [ ] Implement M0–M4. *(M0 persistence/seasonal-naive, M1 raw plus calendar, and M2 the
+  expert program are implemented and scored on USCRN. M3 — random or exhaustive search over
+  the operator registry — is the one that matters for H1 and is next. M4 stays optional.)*
 - [ ] Freeze downstream models, tuning ranges, metrics, splits, and budgets.
 - [ ] Reproduce at least one published or competition-quality reference result where feasible.
-- [ ] Create a baseline result table directly from tracked output files.
+- [x] Create a baseline result table directly from tracked output files. *(`vifusion evaluate`
+  writes `results.txt`, `scores.json` and a run manifest carrying the raw-data hashes, the
+  split hash, the task hash and each method's program hash.)*
 
 **Acceptance tests**
 
 - [ ] Seasonal-naive results pass hand checks.
-- [ ] Model training uses only eligible features and revealed labels.
-- [ ] Rerunning a baseline with the same manifest reproduces its metrics within a declared tolerance.
+- [x] Model training uses only eligible features and revealed labels. *(Features by the replay
+  clock; labels by `tasks.revealed_by`, and every result reports how many training examples
+  were withheld as unrevealed — a count that would fall to zero if the rule stopped being
+  enforced.)*
+- [x] Rerunning a baseline with the same manifest reproduces its metrics within a declared tolerance. *(Exactly, not within a tolerance: no randomness enters the slice, so `test_two_runs_of_one_task_produce_the_same_scores` compares the full result for equality.)*
 
 **Exit criterion:** Baselines are credible enough that an improvement by the proposed system would be meaningful.
 

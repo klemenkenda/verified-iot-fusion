@@ -130,6 +130,29 @@ def _build_parser() -> argparse.ArgumentParser:
         help="what a late record does to vectors already emitted; ignore keeps them immutable",
     )
     dataset_replay.add_argument("--output", default=None, help="write the audit here as JSON")
+
+    evaluate = subcommands.add_parser(
+        "evaluate",
+        help="run every method of a task end to end and write its table, scores, and manifest",
+    )
+    evaluate.add_argument("task", help="path to a YAML task configuration")
+    evaluate.add_argument(
+        "--fold",
+        default="validation",
+        choices=["train", "validation", "test"],
+        help=(
+            "which fold to score on. Defaults to validation: the test fold is untouched "
+            "until the protocol is frozen (section 9.3)"
+        ),
+    )
+    evaluate.add_argument(
+        "--output", default=None, help="directory to write results, scores and the manifest into"
+    )
+    evaluate.add_argument(
+        "--repo-root",
+        default=".",
+        help="root the task's paths resolve against, default the working directory",
+    )
     return parser
 
 
@@ -456,6 +479,43 @@ def _dataset_replay(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _evaluate(args: argparse.Namespace) -> int:
+    """Run one task's methods and report them side by side.
+
+    The default fold is validation, deliberately. Section 9.3 keeps the test interval
+    untouched, and a command whose easiest invocation scores the test set is an invitation to
+    look at it early — which cannot be undone once seen.
+    """
+    from vifusion.adapters.base import AdapterError
+    from vifusion.evaluation import experiment
+    from vifusion.evaluation.tasks import TaskError, load_task
+
+    try:
+        task = load_task(Path(args.task))
+        result = experiment.run_task(task, repo_root=Path(args.repo_root), fold=args.fold)
+    except (TaskError, AdapterError) as error:
+        print(f"cannot run task: {error}", file=sys.stderr)
+        return EXIT_INVALID_DATA
+
+    print(result.table())
+    print()
+    for item in result.results:
+        print(
+            f"{item.method_id:<6} {len(item.feature_names):>3} features   "
+            f"{item.train_examples:>6} train ({item.train_examples_withheld} withheld as "
+            f"unrevealed)   {item.test_examples:>6} scored"
+        )
+    print()
+    print(f"task config hash   {result.task_config_hash}")
+    print(f"split hash         {result.split_manifest_hash}")
+
+    if args.output:
+        manifest = experiment.write_results(Path(args.output), result)
+        print(f"run id             {manifest.run_id}")
+        print(f"written            {args.output}")
+    return EXIT_OK
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one command. Returns the process exit status rather than raising SystemExit."""
     configure_logging()
@@ -478,6 +538,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _dataset_card(args)
     if args.command == "dataset-replay":
         return _dataset_replay(args)
+    if args.command == "evaluate":
+        return _evaluate(args)
     return EXIT_USAGE
 
 

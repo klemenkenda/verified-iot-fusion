@@ -1,0 +1,56 @@
+# The vertical slice of section 11.0: USCRN, one task, no LLM.
+#
+# One-hour-ahead station air temperature, which section 8.2 names as a candidate task. The
+# target is the quality-controlled final product — section 8.2 permits it as a target and
+# forbids it as a replay input — so the reveal delay is the declared publication lag, and a
+# model may fit on an example only once that target was published.
+#
+# This file is hashed into every run manifest as `task_config_hash`, so editing it changes the
+# identity of every run that used it. Change it by adding a version, not in place, once
+# official runs begin (section 12).
+schema_version: "0.1.0"
+name: uscrn_temperature_1h
+
+dataset: uscrn
+root: data/raw/uscrn
+options:
+  final: final/CRNH0203-2023-CO_Boulder_14_W.txt
+
+target_source: uscrn_final
+target_feature: t_hr_avg
+horizon: PT1H
+prediction_interval: PT1H
+
+split: uscrn_primary
+
+# Methods, in the order the results table reports them. M3 and above arrive with the search
+# loop; M0 to M2 are what section 11.0 asks the slice to carry.
+methods:
+  - id: M0
+    program: configs/programs/uscrn_m0_naive.yaml
+    predictor: identity
+    output: persistence
+    description: >-
+      Forecasting floor: the last hourly-mean temperature the station delivered, returned
+      unchanged. Nothing is fitted, and the value is read through the same replay clock as
+      every other method.
+
+  - id: M1
+    program: configs/programs/uscrn_m1_raw_calendar.yaml
+    predictor: ridge
+    description: >-
+      Raw current values plus calendar features. Separates the value of a fitted model from
+      the value of engineered features, which is what M2's margin over it means.
+
+  - id: M2
+    program: configs/programs/uscrn_temperature.yaml
+    predictor: ridge
+    description: >-
+      Expert-engineered features after the iot-fusion vocabulary: windowed statistics,
+      staleness, gap counts, and within-source fusion. The human bar H1 must clear.
+
+rationale: >-
+  One-hour-ahead temperature is the cheapest honest task on this dataset: the target is
+  well behaved, the naive floor is genuinely strong, and the delivery delay that makes USCRN
+  interesting shows up directly in how often a feature is null at prediction time. If the
+  evaluation pipeline is wrong, it will be wrong here in a way that is easy to see.

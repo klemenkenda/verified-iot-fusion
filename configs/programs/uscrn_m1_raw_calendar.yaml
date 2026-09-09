@@ -1,0 +1,78 @@
+# M1 — raw current values plus calendar features (section 9.1).
+#
+# The minimal deterministic baseline: whatever the station last said, and what time it is. No
+# windows, no aggregates, no domain knowledge. Its job is to sit between the naive floor and
+# the expert program so that M2's margin can be attributed to *engineered* features rather
+# than to having a fitted model at all.
+#
+# `t_calc` and `t_hr_avg` are both included because they are genuinely different measurements
+# — the temperature at the end of the hour and the mean over it — and a raw baseline should
+# take what the source offers rather than choose between them on the modeller's intuition.
+schema_version: "0.1.0"
+name: uscrn_m1_raw_calendar
+
+sources:
+  - source_id: uscrn_update
+    feature_name: t_calc
+    kind: measurement
+    value_type: number
+    unit: degC
+    max_input_rate_per_hour: 4
+    description: Air temperature at the end of the hour.
+
+  - source_id: uscrn_update
+    feature_name: t_hr_avg
+    kind: measurement
+    value_type: number
+    unit: degC
+    max_input_rate_per_hour: 4
+    description: Average air temperature over the hour.
+
+  - source_id: uscrn_update
+    feature_name: rh_hr_avg
+    kind: measurement
+    value_type: number
+    unit: percent
+    max_input_rate_per_hour: 4
+    description: Average relative humidity.
+
+  - source_id: uscrn_update
+    feature_name: solarad
+    kind: measurement
+    value_type: number
+    unit: watt / meter ** 2
+    max_input_rate_per_hour: 4
+    description: Average global solar radiation over the hour.
+
+nodes:
+  - id: t_calc_now
+    op: last
+    params: {source: uscrn_update, feature: t_calc}
+  - id: t_hr_avg_now
+    op: last
+    params: {source: uscrn_update, feature: t_hr_avg}
+  - id: rh_now
+    op: last
+    params: {source: uscrn_update, feature: rh_hr_avg}
+  - id: solar_now
+    op: last
+    params: {source: uscrn_update, feature: solarad}
+
+  - id: hour
+    op: hour_of_day
+    params: {timezone: UTC}
+  - id: day_of_year
+    op: day_of_year
+    params: {timezone: UTC}
+  - id: weekend
+    op: is_weekend
+    params: {timezone: UTC}
+
+outputs:
+  - t_calc_now
+  - t_hr_avg_now
+  - rh_now
+  - solar_now
+  - hour
+  - day_of_year
+  - weekend
