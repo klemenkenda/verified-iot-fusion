@@ -1,0 +1,116 @@
+"""Canonical record invariants of section 5.1."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import pytest
+from pydantic import ValidationError
+
+from vifusion.temporal.records import CanonicalRecord, RecordError, RecordKind
+
+T = datetime(2024, 1, 1, tzinfo=UTC)
+HOUR = timedelta(hours=1)
+
+
+def _measurement(**overrides: Any) -> CanonicalRecord:
+    base: dict[str, Any] = {
+        "record_id": "m1",
+        "kind": RecordKind.MEASUREMENT,
+        "entity_id": "e1",
+        "source_id": "s1",
+        "feature_name": "temp",
+        "value": 1.0,
+        "event_time": T,
+        "available_time": T,
+    }
+    return CanonicalRecord(**{**base, **overrides})
+
+
+def test_naive_timestamps_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        _measurement(event_time=datetime(2024, 1, 1), available_time=datetime(2024, 1, 1))
+
+
+def test_a_measurement_cannot_be_available_before_it_occurred() -> None:
+    with pytest.raises(ValidationError, match="available before it occurred"):
+        _measurement(available_time=T - HOUR)
+
+
+def test_availability_may_lag_the_event() -> None:
+    assert _measurement(available_time=T + HOUR).available_time == T + HOUR
+
+
+def test_a_measurement_may_not_carry_forecast_fields() -> None:
+    with pytest.raises(ValidationError, match="forecast fields"):
+        _measurement(valid_time=T + HOUR)
+
+
+def test_a_forecast_requires_both_issue_and_valid_times() -> None:
+    with pytest.raises(ValidationError, match="issued_time and valid_time"):
+        _measurement(kind=RecordKind.FORECAST, issued_time=T)
+
+
+def test_a_forecast_cannot_be_available_before_it_was_issued() -> None:
+    """Publication may lag the issue; it can never precede it (section 14 risk row)."""
+    with pytest.raises(ValidationError, match="available before it was issued"):
+        _measurement(
+            kind=RecordKind.FORECAST,
+            issued_time=T + HOUR,
+            valid_time=T + 2 * HOUR,
+            available_time=T,
+        )
+
+
+def test_a_forecast_may_be_published_after_it_was_issued() -> None:
+    record = _measurement(
+        kind=RecordKind.FORECAST,
+        issued_time=T,
+        valid_time=T + 2 * HOUR,
+        available_time=T + HOUR,
+    )
+    assert record.issued_time is not None
+    assert record.available_time > record.issued_time
+
+
+def test_a_static_fact_may_predate_its_availability_freely() -> None:
+    """A site registered in 2020 but only published to the system in 2024 is legitimate."""
+    record = _measurement(
+        kind=RecordKind.STATIC,
+        feature_name="altitude",
+        event_time=datetime(2020, 1, 1, tzinfo=UTC),
+        available_time=datetime(2024, 1, 1, tzinfo=UTC),
+    )
+    assert record.kind is RecordKind.STATIC
+
+
+def test_label_vocabulary_aliases_the_shared_time_fields() -> None:
+    label = _measurement(
+        kind=RecordKind.LABEL,
+        feature_name="target",
+        event_time=T,
+        available_time=T + 2 * HOUR,
+    )
+    assert label.label_time == label.event_time
+    assert label.label_available_time == label.available_time
+
+
+def test_label_vocabulary_is_refused_on_a_non_label() -> None:
+    """Reading a label time off a measurement is a category error, not a convenience."""
+    with pytest.raises(RecordError, match="not a label"):
+        _ = _measurement().label_time
+
+
+def test_records_are_immutable() -> None:
+    with pytest.raises(ValidationError):
+        _measurement().value = 2.0
+
+
+def test_stream_key_identifies_entity_source_and_feature() -> None:
+    assert _measurement().stream_key == ("e1", "s1", "temp")
+
+
+def test_unknown_fields_are_rejected() -> None:
+    with pytest.raises(ValidationError):
+        _measurement(sensor_id="oops")
