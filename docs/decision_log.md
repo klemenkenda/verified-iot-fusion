@@ -476,3 +476,49 @@ freeze and expensive after it.
   nondeterministic when only the clock had moved. The same distinction the run manifest draws
   with its volatile fields, one level down.
 - **Phase / gate:** Phase 4
+
+### 2026-09-09 — The verifier corpus is labelled in three classes, not two
+
+- **Decision:** `tests/fixtures/programs/` labels every program `valid`, `leaking`, or
+  `invalid`, and `vifusion audit` reports the three separately.
+- **Rationale:** Section 13 asks for a confusion matrix including the false-rejection rate,
+  and that rate is the load-bearing number: a verifier that rejected everything would detect
+  every leak, so the detection rate means nothing without it. The corpus is weighted
+  accordingly — 23 valid programs against 12 leaking — and the valid ones are chosen to press
+  on the verifier's edges (negative forecast leads, week-long lags, dimensionless ratios,
+  deep arithmetic chains) rather than to be comfortably typical. The third class exists
+  because pooling malformed programs with leaking ones would flatter the headline: failing to
+  name an operator is an output-conformance failure fixed by better constrained decoding,
+  while a forward-reaching lag is a temporal-reasoning failure, which is what the paper
+  claims to catch.
+- **First measurement:** 0% false rejection, 100% leak detection, 100% malformed detection.
+- **Affected artifacts:** `src/vifusion/compiler/audit.py`, `vifusion audit`, and the
+  rejection-breakdown figure it generates.
+- **Phase / gate:** Phase 3–4, reported at Gate A
+
+### 2026-09-09 — Unrepresentable leaks are recorded as evidence, not left implicit
+
+- **Decision:** `UNREPRESENTABLE_LEAKS` enumerates seven leaks a Python-emitting feature
+  generator can write and this DSL cannot express, each with the idiom that produces it and
+  the structural reason it has no encoding here. It is emitted in the audit artifact.
+- **Rationale:** The leaking corpus is short — twelve programs — and that could read as a weak
+  test rather than as the contribution. It is the contribution: contribution 2 of
+  `docs/novelty.md` claims streaming-as-normative-semantics makes an ineligible dependency
+  *unrepresentable* rather than merely rejected, and "the verifier caught 12 of 12" understates
+  that claim if the reason there are only twelve goes unstated. The list is the concrete form
+  of the argument, and it belongs in the artifact a reviewer reads.
+- **Phase / gate:** Phase 3–4, reported at Gate A
+
+### 2026-09-09 — Diagnostics do not cascade to downstream nodes
+
+- **Decision:** When a node's input failed to compile, the downstream node emits no
+  diagnostic of its own.
+- **Rationale:** Found by building the corpus. A program with one leaking node feeding one
+  sound node produced two diagnostics: the real `E-TIME-003` against the bad node, and a
+  spurious `E-RESOLVE-004` against the good one claiming its input named no node — when the
+  input was declared and had merely failed. Section 7.2 sends every rejected node to the
+  proposer as repair feedback, so a cascading diagnostic sends a repair loop chasing a
+  phantom, and it would also inflate the `E-RESOLVE` row of the H2b matrix with defects that
+  are really `E-TIME`. Genuinely unresolvable inputs are still caught, in an earlier pass.
+- **Regression test:** `test_diagnostics_do_not_cascade`.
+- **Phase / gate:** Phase 3–4

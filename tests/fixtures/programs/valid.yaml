@@ -1,0 +1,244 @@
+# Programs that MUST compile. Every rejection here is a false rejection.
+#
+# This half of the corpus is the one that keeps H2b honest. A verifier that rejected
+# everything would catch every leak, so the leak-detection rate means nothing without the
+# false-rejection rate beside it. These programs are therefore chosen to press on the
+# verifier's edges — long windows, negative forecast leads, deep arithmetic chains,
+# categorical values, dimensionless ratios — rather than to be comfortably typical.
+family: valid
+
+sources:
+  - source_id: station
+    feature_name: temp
+    kind: measurement
+    value_type: number
+    unit: kelvin
+    max_input_rate_per_hour: 4
+  - source_id: station
+    feature_name: load
+    kind: measurement
+    value_type: number
+    unit: kilowatt
+    max_input_rate_per_hour: 4
+  - source_id: station
+    feature_name: sky
+    kind: measurement
+    value_type: category
+    max_input_rate_per_hour: 4
+  - source_id: neighbour
+    feature_name: temp
+    kind: measurement
+    value_type: number
+    unit: kelvin
+    max_input_rate_per_hour: 4
+  - source_id: site
+    feature_name: altitude
+    kind: static
+    value_type: number
+    unit: meter
+    max_input_rate_per_hour: 1
+  - source_id: nwp
+    feature_name: temp_fc
+    kind: forecast
+    value_type: number
+    unit: kelvin
+    max_input_rate_per_hour: 2
+    max_forecast_horizon: 48h
+
+calendars:
+  si: ["2024-01-01", "2024-01-02", "2024-12-25"]
+
+programs:
+  - name: valid_last_value
+    description: The simplest possible program.
+    nodes:
+      - {id: t, op: last, params: {source: station, feature: temp}}
+    outputs: [t]
+
+  - name: valid_last_value_with_staleness_bound
+    description: A freshness bound is a restriction, not a leak.
+    nodes:
+      - {id: t, op: last, params: {source: station, feature: temp, max_staleness: 30m}}
+    outputs: [t]
+
+  - name: valid_exact_lag
+    description: A positive lag reaches strictly backwards.
+    nodes:
+      - {id: t, op: lag, params: {source: station, feature: temp, lag: 1h}}
+    outputs: [t]
+
+  - name: valid_week_long_lag
+    description: >-
+      A 168-hour lag at four records an hour is 673 retained records. Large but bounded, and
+      the compiler must accept what it can bound rather than what is small.
+    nodes:
+      - {id: t, op: lag, params: {source: station, feature: temp, lag: 168h}}
+    outputs: [t]
+
+  - name: valid_every_window_aggregate
+    description: All seven aggregates over one window.
+    nodes:
+      - {id: n, op: count, params: {source: station, feature: temp, window: 6h}}
+      - {id: s, op: sum, params: {source: station, feature: temp, window: 6h}}
+      - {id: m, op: mean, params: {source: station, feature: temp, window: 6h}}
+      - {id: v, op: variance, params: {source: station, feature: temp, window: 6h}}
+      - {id: sd, op: stddev, params: {source: station, feature: temp, window: 6h}}
+      - {id: lo, op: min, params: {source: station, feature: temp, window: 6h}}
+      - {id: hi, op: max, params: {source: station, feature: temp, window: 6h}}
+    outputs: [n, s, m, v, sd, lo, hi]
+
+  - name: valid_very_short_window
+    description: A fifteen-minute window at the declared rate retains two records.
+    nodes:
+      - {id: m, op: mean, params: {source: station, feature: temp, window: 15m}}
+    outputs: [m]
+
+  - name: valid_staleness_and_missing_count
+    description: Data-quality features, which describe the shape of the data rather than its values.
+    nodes:
+      - {id: age, op: staleness, params: {source: station, feature: temp}}
+      - {id: gaps, op: missing_count, params: {source: station, feature: temp, window: 6h, expected_interval: 15m}}
+    outputs: [age, gaps]
+
+  - name: valid_forecast_at_several_leads
+    description: Three horizons from one revisable source.
+    nodes:
+      - {id: f1, op: forecast, params: {source: nwp, feature: temp_fc, lead: 1h}}
+      - {id: f6, op: forecast, params: {source: nwp, feature: temp_fc, lead: 6h}}
+      - {id: f24, op: forecast, params: {source: nwp, feature: temp_fc, lead: 24h}}
+    outputs: [f1, f6, f24]
+
+  - name: valid_forecast_with_negative_lead
+    description: >-
+      A hindcast: a forecast describing a valid time already past. Legitimate and worth
+      pressing on, because the *lead* points backwards while eligibility still runs on
+      availability. Rejecting this would be a false rejection born of confusing the two.
+    nodes:
+      - {id: f, op: forecast, params: {source: nwp, feature: temp_fc, lead: -3h}}
+    outputs: [f]
+
+  - name: valid_arithmetic_of_two_leaves
+    description: Same unit on both sides of a subtraction.
+    nodes:
+      - {id: a, op: last, params: {source: station, feature: temp}}
+      - {id: b, op: mean, params: {source: station, feature: temp, window: 6h}}
+      - {id: d, op: subtract, inputs: [a, b]}
+    outputs: [d]
+
+  - name: valid_deep_arithmetic_chain
+    description: Arithmetic over arithmetic; the graph must survive depth.
+    nodes:
+      - {id: hi, op: max, params: {source: station, feature: temp, window: 6h}}
+      - {id: lo, op: min, params: {source: station, feature: temp, window: 6h}}
+      - {id: m, op: mean, params: {source: station, feature: temp, window: 6h}}
+      - {id: range, op: subtract, inputs: [hi, lo]}
+      - {id: centred, op: subtract, inputs: [m, lo]}
+      - {id: ratio, op: divide, inputs: [centred, range]}
+      - {id: doubled, op: add, inputs: [ratio, ratio]}
+    outputs: [doubled]
+
+  - name: valid_dimensionless_ratio
+    description: Kelvin over kelvin is dimensionless, and the unit rule must say so.
+    nodes:
+      - {id: a, op: last, params: {source: station, feature: temp}}
+      - {id: b, op: mean, params: {source: station, feature: temp, window: 6h}}
+      - {id: r, op: divide, inputs: [a, b]}
+    outputs: [r]
+
+  - name: valid_product_of_units
+    description: Kelvin times metre is a compound unit, not an error.
+    nodes:
+      - {id: t, op: last, params: {source: station, feature: temp}}
+      - {id: h, op: last, params: {source: site, feature: altitude}}
+      - {id: p, op: multiply, inputs: [t, h]}
+    outputs: [p]
+
+  - name: valid_cross_source_fusion
+    description: Two sources with the same unit, combined after temporal alignment.
+    nodes:
+      - {id: here, op: last, params: {source: station, feature: temp}}
+      - {id: there, op: last, params: {source: neighbour, feature: temp}}
+      - {id: gradient, op: subtract, inputs: [here, there]}
+    outputs: [gradient]
+
+  - name: valid_forecast_against_observation
+    description: The cross-source combination the whole system exists to make safe.
+    nodes:
+      - {id: obs, op: last, params: {source: station, feature: temp}}
+      - {id: fc, op: forecast, params: {source: nwp, feature: temp_fc, lead: 3h}}
+      - {id: bias, op: subtract, inputs: [fc, obs]}
+    outputs: [bias]
+
+  - name: valid_categorical_last_value
+    description: A category passes through last-value untouched.
+    nodes:
+      - {id: sky, op: last, params: {source: station, feature: sky}}
+    outputs: [sky]
+
+  - name: valid_static_fact
+    description: A static fact obeys the same eligibility rule as anything else.
+    nodes:
+      - {id: alt, op: last, params: {source: site, feature: altitude}}
+    outputs: [alt]
+
+  - name: valid_calendar_features
+    description: Pure functions of the prediction time, with a declared timezone.
+    nodes:
+      - {id: hod, op: hour_of_day, params: {timezone: Europe/Ljubljana}}
+      - {id: dow, op: day_of_week, params: {timezone: Europe/Ljubljana}}
+      - {id: wknd, op: is_weekend, params: {timezone: UTC}}
+    outputs: [hod, dow, wknd]
+
+  - name: valid_holiday_features
+    description: Holiday fields against a declared calendar.
+    nodes:
+      - {id: hol, op: is_holiday, params: {timezone: Europe/Ljubljana, calendar: si}}
+      - {id: pre, op: day_before_holiday, params: {timezone: Europe/Ljubljana, calendar: si}}
+      - {id: post, op: day_after_holiday, params: {timezone: Europe/Ljubljana, calendar: si}}
+    outputs: [hol, pre, post]
+
+  - name: valid_calendar_combined_with_measurement
+    description: A dimensionless calendar value multiplied into a measurement.
+    nodes:
+      - {id: t, op: last, params: {source: station, feature: temp}}
+      - {id: wknd, op: is_weekend, params: {timezone: UTC}}
+      - {id: weekend_temp, op: multiply, inputs: [t, wknd]}
+    outputs: [weekend_temp]
+
+  - name: valid_intermediate_node_not_in_outputs
+    description: >-
+      A node used only as an input need not be an output. The compiler must not require
+      every node to be reported.
+    nodes:
+      - {id: hidden, op: mean, params: {source: station, feature: temp, window: 6h}}
+      - {id: t, op: last, params: {source: station, feature: temp}}
+      - {id: shown, op: subtract, inputs: [t, hidden]}
+    outputs: [shown]
+
+  - name: valid_shared_node_feeding_two_outputs
+    description: One node consumed twice; the graph is a DAG, not a tree.
+    nodes:
+      - {id: m, op: mean, params: {source: station, feature: temp, window: 6h}}
+      - {id: t, op: last, params: {source: station, feature: temp}}
+      - {id: a, op: subtract, inputs: [t, m]}
+      - {id: b, op: divide, inputs: [t, m]}
+    outputs: [a, b]
+
+  - name: valid_many_features_over_many_sources
+    description: A realistically wide program, closer to what a proposer will emit.
+    nodes:
+      - {id: t_now, op: last, params: {source: station, feature: temp}}
+      - {id: t_mean, op: mean, params: {source: station, feature: temp, window: 24h}}
+      - {id: t_sd, op: stddev, params: {source: station, feature: temp, window: 24h}}
+      - {id: l_now, op: last, params: {source: station, feature: load}}
+      - {id: l_lag, op: lag, params: {source: station, feature: load, lag: 24h}}
+      - {id: l_gaps, op: missing_count, params: {source: station, feature: load, window: 24h, expected_interval: 15m}}
+      - {id: n_now, op: last, params: {source: neighbour, feature: temp}}
+      - {id: alt, op: last, params: {source: site, feature: altitude}}
+      - {id: fc, op: forecast, params: {source: nwp, feature: temp_fc, lead: 12h}}
+      - {id: hod, op: hour_of_day, params: {timezone: UTC}}
+      - {id: anomaly, op: subtract, inputs: [t_now, t_mean]}
+      - {id: gradient, op: subtract, inputs: [t_now, n_now]}
+      - {id: bias, op: subtract, inputs: [fc, t_now]}
+      - {id: delta, op: subtract, inputs: [l_now, l_lag]}
+    outputs: [t_now, t_mean, t_sd, l_now, l_lag, l_gaps, n_now, alt, fc, hod, anomaly, gradient, bias, delta]

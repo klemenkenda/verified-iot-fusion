@@ -580,7 +580,7 @@ Build a small exhaustive simulator with measurements, delayed arrivals, missing 
 
 **Make the oracle structurally independent, not merely separate.** A second implementation written by the same author from the same mental model inherits the same misconceptions, and the differential test then has little power. Force a different algorithm: for each prediction time `t`, the oracle re-filters the *entire* record log by `available_time <= t` and computes the feature in plain Python, retaining no state between prediction times. It is quadratic and unusable at scale, which is acceptable on the synthetic suite. The production engine is incremental and stateful; the oracle is stateless and exhaustive. Because eligibility is re-derived from scratch rather than maintained, the two implementations fail in different ways, and their agreement is real evidence for H2a.
 
-The oracle suite should include at least 100 hand-auditable named scenarios plus property-generated cases. Each named scenario states:
+The oracle suite should include at least 100 hand-auditable named scenarios plus property-generated cases. *(Progress: 72 named scenarios across eight families as of Phase 4, plus the Hypothesis suites and a 50-program labelled verifier corpus.)* Each named scenario states:
 
 - arrival sequence;
 - prediction time;

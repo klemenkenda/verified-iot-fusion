@@ -109,7 +109,21 @@ def test_lineage_never_names_an_ineligible_record(scenario: Scenario) -> None:
 
 
 def test_the_suite_is_actually_loaded() -> None:
-    """Guards against an empty parametrisation silently passing every test above."""
-    assert len(SCENARIOS) >= 35
+    """Guards against an empty parametrisation silently passing every test above.
+
+    Section 10.3 asks for at least 100 named scenarios in the oracle suite. The count below
+    is the floor reached so far and is raised as families are added, so that a file failing
+    to load is caught rather than quietly shrinking the evidence.
+    """
+    assert len(SCENARIOS) >= 70
     families = {scenario.family for scenario in SCENARIOS}
-    assert families >= {"eligibility", "forecasts", "windows", "staleness_and_gaps"}
+    assert families >= {
+        "eligibility",
+        "forecasts",
+        "windows",
+        "staleness_and_gaps",
+        "labels_and_statics",
+        "out_of_order",
+        "degenerate",
+        "cross_source",
+    }

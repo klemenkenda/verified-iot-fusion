@@ -66,6 +66,12 @@ def _build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--requests", type=int, default=100, help="requests per entity")
     bench.add_argument("--seed", type=int, default=20260909)
     bench.add_argument("--output", default=None, help="write the measurement here as JSON")
+
+    corpus = subcommands.add_parser(
+        "audit", help="compile a labelled program corpus and report the verifier confusion matrix"
+    )
+    corpus.add_argument("corpus", help="directory of labelled program YAML files")
+    corpus.add_argument("--output", default=None, help="write the matrix here as JSON")
     return parser
 
 
@@ -234,6 +240,30 @@ def _bench(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _audit(args: argparse.Namespace) -> int:
+    """Compute the H2b confusion matrix from a labelled corpus.
+
+    Exits non-zero on a false acceptance — a leaking program the verifier let through — since
+    that is the one outcome the correctness claim cannot survive. A false rejection is
+    reported but does not fail the command: it is a number to report, not a defect by itself.
+    """
+    from vifusion.compiler import audit
+
+    programs = audit.load_corpus(Path(args.corpus))
+    matrix = audit.audit(programs)
+    print(audit.summarise(matrix))
+    if args.output:
+        destination = Path(args.output)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(
+            json.dumps(matrix.as_dict(), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        print(f"\nwritten            {destination}")
+    return EXIT_OK if not matrix.false_acceptances else EXIT_INVALID_PROGRAM
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run one command. Returns the process exit status rather than raising SystemExit."""
     configure_logging()
@@ -250,6 +280,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _explain(args.program, args.records)
     if args.command == "bench":
         return _bench(args)
+    if args.command == "audit":
+        return _audit(args)
     return EXIT_USAGE
 
 

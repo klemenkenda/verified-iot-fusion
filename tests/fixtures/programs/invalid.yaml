@@ -1,0 +1,168 @@
+# Programs that are wrong but do not leak.
+#
+# They exist as a third class because pooling them with the leaks would flatter the
+# verifier's headline number. A model that cannot name an operator is failing at output
+# conformance; a model that writes a forward-reaching lag is failing at temporal reasoning.
+# H2b should report those separately, because they call for different responses: the first
+# is fixed by better schema-constrained decoding, the second is the thing the paper claims
+# to catch.
+family: invalid
+
+sources:
+  - source_id: station
+    feature_name: temp
+    kind: measurement
+    value_type: number
+    unit: kelvin
+    max_input_rate_per_hour: 4
+  - source_id: station
+    feature_name: sky
+    kind: measurement
+    value_type: category
+    max_input_rate_per_hour: 4
+  - source_id: unbounded
+    feature_name: temp
+    kind: measurement
+    value_type: number
+    unit: kelvin
+  - source_id: nwp
+    feature_name: temp_fc
+    kind: forecast
+    value_type: number
+    unit: kelvin
+    max_input_rate_per_hour: 2
+    max_forecast_horizon: 48h
+
+calendars:
+  si: ["2024-01-01"]
+
+programs:
+  - name: invalid_unknown_operator
+    description: An operator the registry does not define.
+    expected_family: E-RESOLVE
+    expected_code: E-RESOLVE-001
+    nodes:
+      - {id: t, op: exponential_smoothing, params: {source: station, feature: temp}}
+    outputs: [t]
+
+  - name: invalid_unknown_source
+    description: A source the program never declared.
+    expected_family: E-RESOLVE
+    expected_code: E-RESOLVE-002
+    nodes:
+      - {id: t, op: last, params: {source: satellite, feature: temp}}
+    outputs: [t]
+
+  - name: invalid_unknown_field
+    description: A declared source, an undeclared field on it.
+    expected_family: E-RESOLVE
+    expected_code: E-RESOLVE-003
+    nodes:
+      - {id: t, op: last, params: {source: station, feature: humidity}}
+    outputs: [t]
+
+  - name: invalid_unknown_input
+    description: An input naming no node.
+    expected_family: E-RESOLVE
+    expected_code: E-RESOLVE-004
+    nodes:
+      - {id: t, op: last, params: {source: station, feature: temp}}
+      - {id: d, op: subtract, inputs: [t, phantom]}
+    outputs: [d]
+
+  - name: invalid_unknown_calendar
+    description: A holiday field against an undeclared calendar.
+    expected_family: E-RESOLVE
+    expected_code: E-RESOLVE-006
+    nodes:
+      - {id: h, op: is_holiday, params: {timezone: UTC, calendar: narnia}}
+    outputs: [h]
+
+  - name: invalid_unknown_timezone
+    description: A zone not in the IANA database.
+    expected_family: E-RESOLVE
+    expected_code: E-RESOLVE-007
+    nodes:
+      - {id: h, op: hour_of_day, params: {timezone: Middle/Earth}}
+    outputs: [h]
+
+  - name: invalid_cycle
+    description: Two nodes depending on each other.
+    expected_family: E-GRAPH
+    expected_code: E-GRAPH-001
+    nodes:
+      - {id: a, op: add, inputs: [b, b]}
+      - {id: b, op: add, inputs: [a, a]}
+    outputs: [a]
+
+  - name: invalid_wrong_arity
+    description: A binary operator given one input.
+    expected_family: E-GRAPH
+    expected_code: E-GRAPH-003
+    nodes:
+      - {id: t, op: last, params: {source: station, feature: temp}}
+      - {id: d, op: subtract, inputs: [t]}
+    outputs: [d]
+
+  - name: invalid_missing_parameter
+    description: A windowed aggregate with no window.
+    expected_family: E-GRAPH
+    expected_code: E-GRAPH-004
+    nodes:
+      - {id: m, op: mean, params: {source: station, feature: temp}}
+    outputs: [m]
+
+  - name: invalid_unknown_parameter
+    description: A parameter the operator does not take, which usually means a misunderstanding.
+    expected_family: E-GRAPH
+    expected_code: E-GRAPH-005
+    nodes:
+      - {id: t, op: last, params: {source: station, feature: temp, halflife: 3h}}
+    outputs: [t]
+
+  - name: invalid_type_mismatch
+    description: A category added to a number.
+    expected_family: E-TYPE
+    expected_code: E-TYPE-001
+    nodes:
+      - {id: t, op: last, params: {source: station, feature: temp}}
+      - {id: s, op: last, params: {source: station, feature: sky}}
+      - {id: d, op: add, inputs: [t, s]}
+    outputs: [d]
+
+  - name: invalid_aggregate_over_category
+    description: A mean over a categorical stream.
+    expected_family: E-TYPE
+    expected_code: E-TYPE-002
+    nodes:
+      - {id: m, op: mean, params: {source: station, feature: sky, window: 6h}}
+    outputs: [m]
+
+  - name: invalid_incompatible_units
+    description: Seconds added to kelvin.
+    expected_family: E-UNIT
+    expected_code: E-UNIT-001
+    nodes:
+      - {id: t, op: last, params: {source: station, feature: temp}}
+      - {id: age, op: staleness, params: {source: station, feature: temp}}
+      - {id: nonsense, op: add, inputs: [t, age]}
+    outputs: [nonsense]
+
+  - name: invalid_state_cannot_be_bounded
+    description: >-
+      A windowed aggregate over a source that declares no arrival rate. Section 5.3 is
+      explicit that lookback alone cannot bound state, so this is a resource failure rather
+      than a leak — the program might be perfectly sound if the rate were declared.
+    expected_family: E-RESOURCE
+    expected_code: E-RESOURCE-001
+    nodes:
+      - {id: m, op: mean, params: {source: unbounded, feature: temp, window: 6h}}
+    outputs: [m]
+
+  - name: invalid_output_names_no_node
+    description: An output that was never defined.
+    expected_family: E-RESOLVE
+    expected_code: E-RESOLVE-005
+    nodes:
+      - {id: t, op: last, params: {source: station, feature: temp}}
+    outputs: [t, imaginary]

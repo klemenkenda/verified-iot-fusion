@@ -1,0 +1,169 @@
+# Out-of-order arrival.
+#
+# docs/original_system_audit.md records a fully written `it('out of order measurements', ...)`
+# test in the original repository, entirely wrapped in a comment block: the authors identified
+# out-of-order arrival as worth testing and never enabled it. The input shapes below are in
+# that spirit; the expected outputs are derived here from the eligibility rule rather than
+# copied from the original, whose alignment code logs a mismatch and proceeds anyway.
+family: out_of_order
+
+scenarios:
+  - name: out_of_order_later_event_arrives_first
+    description: >-
+      The 02:00 reading is delivered before the 01:00 one. Both are eligible at 03:00, and
+      last-value must return the newer *event*, not the earlier *arrival*.
+    records:
+      - {id: m_late_event, event_time: "2024-01-01T02:00:00Z", available_time: "2024-01-01T02:10:00Z", value: 20.0}
+      - {id: m_early_event, event_time: "2024-01-01T01:00:00Z", available_time: "2024-01-01T02:20:00Z", value: 10.0}
+    specs:
+      - {name: last_temp, op: last_value}
+      - {name: n_3h, op: window, window: 3h, aggregate: count}
+    prediction_time: "2024-01-01T03:00:00Z"
+    expect:
+      eligible: [m_late_event, m_early_event]
+      values: {last_temp: 20.0, n_3h: 2.0}
+      lineage: {last_temp: [m_late_event]}
+
+  - name: out_of_order_backfill_is_invisible_until_it_lands
+    description: >-
+      The same pair read at 02:15, between the two arrivals. Only the record that has
+      actually arrived counts, even though the other describes an earlier moment.
+    records:
+      - {id: m_late_event, event_time: "2024-01-01T02:00:00Z", available_time: "2024-01-01T02:10:00Z", value: 20.0}
+      - {id: m_early_event, event_time: "2024-01-01T01:00:00Z", available_time: "2024-01-01T02:20:00Z", value: 10.0}
+    specs:
+      - {name: last_temp, op: last_value}
+      - {name: n_3h, op: window, window: 3h, aggregate: count}
+    prediction_time: "2024-01-01T02:15:00Z"
+    expect:
+      eligible: [m_late_event]
+      values: {last_temp: 20.0, n_3h: 1.0}
+      lineage: {n_3h: [m_late_event]}
+
+  - name: out_of_order_backfill_changes_a_later_mean
+    description: >-
+      The backfilled 01:00 reading joins the window once it arrives. Prior vectors are
+      untouched — that is the late-data policy — but subsequent ones must include it.
+    records:
+      - {id: m_late_event, event_time: "2024-01-01T02:00:00Z", available_time: "2024-01-01T02:10:00Z", value: 20.0}
+      - {id: m_early_event, event_time: "2024-01-01T01:00:00Z", available_time: "2024-01-01T02:20:00Z", value: 10.0}
+    specs:
+      - {name: mean_3h, op: window, window: 3h, aggregate: mean}
+    prediction_time: "2024-01-01T02:30:00Z"
+    expect:
+      values: {mean_3h: 15.0}
+      lineage: {mean_3h: [m_early_event, m_late_event]}
+
+  - name: out_of_order_does_not_disturb_staleness
+    description: >-
+      Staleness follows the newest *event* among eligible records, so a backfilled older
+      reading arriving later must not make the stream look fresher.
+    records:
+      - {id: m_new, event_time: "2024-01-01T02:00:00Z", value: 20.0}
+      - {id: m_backfill, event_time: "2024-01-01T00:30:00Z", available_time: "2024-01-01T02:30:00Z", value: 10.0}
+    specs:
+      - {name: age, op: staleness}
+    prediction_time: "2024-01-01T03:00:00Z"
+    expect:
+      values: {age: 3600.0}
+      lineage: {age: [m_new]}
+
+  - name: out_of_order_lag_finds_a_backfilled_record
+    description: >-
+      An exact lag lands on a record that arrived out of order. Eligibility is the only
+      question; arrival order is not one.
+    records:
+      - {id: m_target, event_time: "2024-01-01T01:00:00Z", available_time: "2024-01-01T02:45:00Z", value: 11.0}
+      - {id: m_other, event_time: "2024-01-01T02:00:00Z", value: 22.0}
+    specs:
+      - {name: lag_2h, op: lag, lag: 2h}
+    prediction_time: "2024-01-01T03:00:00Z"
+    expect:
+      values: {lag_2h: 11.0}
+      lineage: {lag_2h: [m_target]}
+
+  - name: out_of_order_burst_delivered_together
+    description: >-
+      Four readings spanning four hours, all delivered in one batch at 05:00. Before the
+      batch nothing is visible; the scenario reads after it, so all four count.
+    records:
+      - {id: b1, event_time: "2024-01-01T01:00:00Z", available_time: "2024-01-01T05:00:00Z", value: 1.0}
+      - {id: b2, event_time: "2024-01-01T02:00:00Z", available_time: "2024-01-01T05:00:00Z", value: 2.0}
+      - {id: b3, event_time: "2024-01-01T03:00:00Z", available_time: "2024-01-01T05:00:00Z", value: 3.0}
+      - {id: b4, event_time: "2024-01-01T04:00:00Z", available_time: "2024-01-01T05:00:00Z", value: 4.0}
+    specs:
+      - {name: n_6h, op: window, window: 6h, aggregate: count}
+      - {name: mean_6h, op: window, window: 6h, aggregate: mean}
+    prediction_time: "2024-01-01T05:00:00Z"
+    expect:
+      eligible: [b1, b2, b3, b4]
+      values: {n_6h: 4.0, mean_6h: 2.5}
+
+  - name: out_of_order_burst_is_invisible_one_second_early
+    description: The same burst, read one second before it lands. The whole batch is withheld.
+    records:
+      - {id: b1, event_time: "2024-01-01T01:00:00Z", available_time: "2024-01-01T05:00:00Z", value: 1.0}
+      - {id: b2, event_time: "2024-01-01T02:00:00Z", available_time: "2024-01-01T05:00:00Z", value: 2.0}
+      - {id: b3, event_time: "2024-01-01T03:00:00Z", available_time: "2024-01-01T05:00:00Z", value: 3.0}
+      - {id: b4, event_time: "2024-01-01T04:00:00Z", available_time: "2024-01-01T05:00:00Z", value: 4.0}
+    specs:
+      - {name: n_6h, op: window, window: 6h, aggregate: count}
+      - {name: mean_6h, op: window, window: 6h, aggregate: mean}
+    prediction_time: "2024-01-01T04:59:59Z"
+    expect:
+      eligible: []
+      values: {n_6h: 0.0, mean_6h: null}
+      lineage: {n_6h: [], mean_6h: []}
+
+  - name: out_of_order_duplicate_delivery_is_idempotent_in_value
+    description: >-
+      The same observation delivered twice under different ids. Last-value resolves by the
+      total order and returns one of them; the value is the same either way, which is what
+      idempotent redelivery should mean.
+    records:
+      - {id: dup_a, event_time: "2024-01-01T02:00:00Z", available_time: "2024-01-01T02:05:00Z", value: 20.0}
+      - {id: dup_b, event_time: "2024-01-01T02:00:00Z", available_time: "2024-01-01T02:40:00Z", value: 20.0}
+    specs:
+      - {name: last_temp, op: last_value}
+      - {name: n_3h, op: window, window: 3h, aggregate: count}
+    prediction_time: "2024-01-01T03:00:00Z"
+    expect:
+      values: {last_temp: 20.0, n_3h: 2.0}
+      lineage: {last_temp: [dup_b]}
+
+  - name: out_of_order_forecast_published_out_of_issue_order
+    description: >-
+      An older issue published *after* a newer one. Selection is by issue time among what has
+      arrived, so once both are eligible the newer issue wins regardless of arrival order.
+    records:
+      - {id: f_new, kind: forecast, feature: temp_fc, issued_time: "2024-01-01T02:00:00Z",
+         available_time: "2024-01-01T02:05:00Z", event_time: "2024-01-01T02:00:00Z",
+         valid_time: "2024-01-01T06:00:00Z", value: 30.0}
+      - {id: f_old, kind: forecast, feature: temp_fc, issued_time: "2024-01-01T01:00:00Z",
+         available_time: "2024-01-01T02:30:00Z", event_time: "2024-01-01T01:00:00Z",
+         valid_time: "2024-01-01T06:00:00Z", value: 10.0}
+    specs:
+      - {name: fc_3h, op: forecast, feature: temp_fc, lead: 3h}
+    prediction_time: "2024-01-01T03:00:00Z"
+    expect:
+      values: {fc_3h: 30.0}
+      lineage: {fc_3h: [f_new]}
+
+  - name: out_of_order_only_the_late_older_issue_has_arrived
+    description: >-
+      Read between the two arrivals, only the older issue is eligible, so it is selected even
+      though a better one exists in the log.
+    records:
+      - {id: f_new, kind: forecast, feature: temp_fc, issued_time: "2024-01-01T02:00:00Z",
+         available_time: "2024-01-01T03:30:00Z", event_time: "2024-01-01T02:00:00Z",
+         valid_time: "2024-01-01T06:00:00Z", value: 30.0}
+      - {id: f_old, kind: forecast, feature: temp_fc, issued_time: "2024-01-01T01:00:00Z",
+         available_time: "2024-01-01T02:30:00Z", event_time: "2024-01-01T01:00:00Z",
+         valid_time: "2024-01-01T06:00:00Z", value: 10.0}
+    specs:
+      - {name: fc_3h, op: forecast, feature: temp_fc, lead: 3h}
+    prediction_time: "2024-01-01T03:00:00Z"
+    expect:
+      eligible: [f_old]
+      values: {fc_3h: 10.0}
+      lineage: {fc_3h: [f_old]}

@@ -651,11 +651,12 @@ def _compile_arithmetic_node(
     for name in node.inputs:
         upstream = compilation.plans.get(name)
         if upstream is None:
-            compilation.reject(
-                Code.UNKNOWN_INPUT,
-                node.id,
-                f"input {name!r} is not a compiled node in this program",
-            )
+            # The name resolves — genuinely unknown inputs were rejected in an earlier pass —
+            # so a missing plan means the upstream node failed to compile. Reporting that as
+            # UNKNOWN_INPUT would be a cascade: it blames this node for a defect in another,
+            # against a name that *is* declared. Section 7.2 sends these diagnostics to the
+            # proposer as repair feedback, and a repair loop chasing a phantom is worse than
+            # one told less. The root cause is already reported against the node that has it.
             return
         inputs.append(upstream)
 

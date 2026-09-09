@@ -1,0 +1,169 @@
+# Several streams and several entities at once.
+#
+# Streams are keyed by entity, source and feature name together. These scenarios press on
+# that key: a feature must draw from exactly its own stream, and one stream's arrival pattern
+# must not affect another's eligibility. Feature programs are written once and instantiated
+# per entity (section 5.3), so an entity leak would corrupt every instantiation at once.
+family: cross_source
+
+scenarios:
+  - name: cross_source_two_sources_have_independent_availability
+    description: >-
+      Two sources, one delayed. The delayed source's feature is null while the prompt one is
+      populated; a shared eligibility cursor would make both null or both visible.
+    records:
+      - {id: prompt, source: s1, event_time: "2024-01-01T01:00:00Z", value: 10.0}
+      - {id: delayed, source: s2, event_time: "2024-01-01T01:00:00Z", available_time: "2024-01-01T09:00:00Z", value: 99.0}
+    specs:
+      - {name: from_s1, op: last_value, source: s1}
+      - {name: from_s2, op: last_value, source: s2}
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      eligible: [prompt]
+      values: {from_s1: 10.0, from_s2: null}
+      lineage: {from_s1: [prompt], from_s2: []}
+
+  - name: cross_source_same_feature_name_on_two_sources
+    description: >-
+      Both sources call the field `temp`. The stream key includes the source, so the two must
+      not pool — the classic silent join.
+    records:
+      - {id: a, source: s1, feature: temp, event_time: "2024-01-01T01:00:00Z", value: 10.0}
+      - {id: b, source: s2, feature: temp, event_time: "2024-01-01T01:30:00Z", value: 20.0}
+    specs:
+      - {name: n_s1, op: window, source: s1, window: 3h, aggregate: count}
+      - {name: n_s2, op: window, source: s2, window: 3h, aggregate: count}
+      - {name: mean_s1, op: window, source: s1, window: 3h, aggregate: mean}
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      values: {n_s1: 1.0, n_s2: 1.0, mean_s1: 10.0}
+      lineage: {n_s1: [a], n_s2: [b], mean_s1: [a]}
+
+  - name: cross_source_same_source_two_features
+    description: One source carrying two fields; the feature name separates them.
+    records:
+      - {id: t1, feature: temp, event_time: "2024-01-01T01:00:00Z", value: 10.0}
+      - {id: h1, feature: humidity, event_time: "2024-01-01T01:30:00Z", value: 80.0}
+    specs:
+      - {name: last_temp, op: last_value, feature: temp}
+      - {name: last_humidity, op: last_value, feature: humidity}
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      values: {last_temp: 10.0, last_humidity: 80.0}
+      lineage: {last_temp: [t1], last_humidity: [h1]}
+
+  - name: cross_source_entities_do_not_pool
+    description: >-
+      Three entities reporting the same source and field. A feature for e1 must see only e1,
+      or every per-entity instantiation of the program is wrong at once.
+    records:
+      - {id: e1_a, entity: e1, event_time: "2024-01-01T01:00:00Z", value: 1.0}
+      - {id: e2_a, entity: e2, event_time: "2024-01-01T01:10:00Z", value: 2.0}
+      - {id: e3_a, entity: e3, event_time: "2024-01-01T01:20:00Z", value: 3.0}
+    specs:
+      - {name: mine, op: last_value, entity: e1}
+      - {name: n_mine, op: window, entity: e1, window: 3h, aggregate: count}
+    entity: e1
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      eligible: [e1_a, e2_a, e3_a]
+      values: {mine: 1.0, n_mine: 1.0}
+      lineage: {mine: [e1_a], n_mine: [e1_a]}
+
+  - name: cross_source_another_entity_is_delayed
+    description: >-
+      A neighbouring entity's delayed arrival must not affect this entity's features, in
+      either direction.
+    records:
+      - {id: e1_a, entity: e1, event_time: "2024-01-01T01:00:00Z", value: 1.0}
+      - {id: e2_late, entity: e2, event_time: "2024-01-01T01:10:00Z", available_time: "2024-01-01T08:00:00Z", value: 99.0}
+    specs:
+      - {name: mine, op: last_value, entity: e1}
+    entity: e1
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      eligible: [e1_a]
+      values: {mine: 1.0}
+      lineage: {mine: [e1_a]}
+
+  - name: cross_source_measurement_and_forecast_side_by_side
+    description: >-
+      An observation stream and a forecast stream on the same entity, read together. Their
+      selection rules differ and must not be confused.
+    records:
+      - {id: obs, source: station, feature: temp, event_time: "2024-01-01T01:30:00Z", value: 12.0}
+      - {id: fc, kind: forecast, source: nwp, feature: temp_fc,
+         issued_time: "2024-01-01T01:00:00Z", available_time: "2024-01-01T01:15:00Z",
+         event_time: "2024-01-01T01:00:00Z", valid_time: "2024-01-01T05:00:00Z", value: 15.0}
+    specs:
+      - {name: observed, op: last_value, source: station, feature: temp}
+      - {name: predicted, op: forecast, source: nwp, feature: temp_fc, lead: 3h}
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      eligible: [fc, obs]
+      values: {observed: 12.0, predicted: 15.0}
+      lineage: {observed: [obs], predicted: [fc]}
+
+  - name: cross_source_static_fact_beside_a_measurement
+    description: A static fact and a measurement on one entity, with different arrival patterns.
+    records:
+      - {id: alt, kind: static, source: site, feature: altitude,
+         event_time: "2020-06-01T00:00:00Z", available_time: "2020-06-01T00:00:00Z", value: 350.0}
+      - {id: t, source: station, feature: temp, event_time: "2024-01-01T01:30:00Z", value: 12.0}
+    specs:
+      - {name: altitude, op: last_value, source: site, feature: altitude}
+      - {name: temp, op: last_value, source: station, feature: temp}
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      values: {altitude: 350.0, temp: 12.0}
+      lineage: {altitude: [alt], temp: [t]}
+
+  - name: cross_source_one_stream_empty_the_other_populated
+    description: >-
+      A requested stream with no records at all returns null rather than borrowing from a
+      populated neighbour.
+    records:
+      - {id: only_s1, source: s1, event_time: "2024-01-01T01:00:00Z", value: 10.0}
+    specs:
+      - {name: from_s1, op: last_value, source: s1}
+      - {name: from_s2, op: last_value, source: s2}
+      - {name: n_s2, op: window, source: s2, window: 3h, aggregate: count}
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      values: {from_s1: 10.0, from_s2: null, n_s2: 0.0}
+      lineage: {from_s2: [], n_s2: []}
+
+  - name: cross_source_windows_of_different_lengths_on_one_stream
+    description: >-
+      Two windows over the same stream. The engine keeps one buffer sized by the longer
+      reach, and the shorter window must still exclude what falls outside it.
+    records:
+      - {id: old, event_time: "2024-01-01T09:00:00Z", value: 1.0}
+      - {id: mid, event_time: "2024-01-01T11:00:00Z", value: 2.0}
+      - {id: new, event_time: "2024-01-01T11:45:00Z", value: 3.0}
+    specs:
+      - {name: n_1h, op: window, window: 1h, aggregate: count}
+      - {name: n_6h, op: window, window: 6h, aggregate: count}
+      - {name: mean_1h, op: window, window: 1h, aggregate: mean}
+      - {name: mean_6h, op: window, window: 6h, aggregate: mean}
+    prediction_time: "2024-01-01T12:00:00Z"
+    expect:
+      values: {n_1h: 1.0, n_6h: 3.0, mean_1h: 3.0, mean_6h: 2.0}
+      lineage: {n_1h: [new], n_6h: [mid, new, old]}
+
+  - name: cross_source_unbounded_and_bounded_specs_share_a_stream
+    description: >-
+      An unbounded last-value beside a short window on one stream. The unbounded spec must
+      not shorten the window its neighbour depends on — a retention bug that named scenarios
+      with a single spec cannot reach, and that Hypothesis found once already.
+    records:
+      - {id: ancient, event_time: "2024-01-01T00:00:00Z", value: 1.0}
+      - {id: recent, event_time: "2024-01-01T11:30:00Z", value: 5.0}
+    specs:
+      - {name: last_any, op: last_value}
+      - {name: n_1h, op: window, window: 1h, aggregate: count}
+      - {name: mean_1h, op: window, window: 1h, aggregate: mean}
+    prediction_time: "2024-01-01T12:00:00Z"
+    expect:
+      values: {last_any: 5.0, n_1h: 1.0, mean_1h: 5.0}
+      lineage: {last_any: [recent], n_1h: [recent]}

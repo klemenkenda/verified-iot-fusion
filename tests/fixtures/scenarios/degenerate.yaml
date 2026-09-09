@@ -1,0 +1,160 @@
+# Degenerate and boundary inputs.
+#
+# Empty streams, all-null streams, single observations, and windows that just miss. These are
+# where an operator quietly returns a plausible wrong number — a zero that means "no data", a
+# mean over one point presented as a trend — rather than failing visibly.
+family: degenerate
+
+scenarios:
+  - name: degenerate_empty_log
+    description: No records at all. Counts are zero, everything else is unknown.
+    records: []
+    specs:
+      - {name: last_temp, op: last_value}
+      - {name: age, op: staleness}
+      - {name: n_1h, op: window, window: 1h, aggregate: count}
+      - {name: mean_1h, op: window, window: 1h, aggregate: mean}
+    prediction_time: "2024-01-01T12:00:00Z"
+    expect:
+      eligible: []
+      values: {last_temp: null, age: null, n_1h: 0.0, mean_1h: null}
+      lineage: {last_temp: [], age: [], n_1h: [], mean_1h: []}
+
+  - name: degenerate_every_value_is_null
+    description: >-
+      Records arrived, all carrying recorded missing values. The stream exists and is empty
+      of information, which is different from a stream that does not exist — the count is
+      zero but the missing count is not.
+    records:
+      - {id: n1, event_time: "2024-01-01T11:00:00Z", value: null}
+      - {id: n2, event_time: "2024-01-01T11:30:00Z", value: null}
+    specs:
+      - {name: last_temp, op: last_value}
+      - {name: n_2h, op: window, window: 2h, aggregate: count}
+      - {name: gaps_2h, op: missing_count, window: 2h, expected_interval: 30m}
+    prediction_time: "2024-01-01T12:00:00Z"
+    expect:
+      eligible: [n1, n2]
+      values: {last_temp: null, n_2h: 0.0, gaps_2h: 4.0}
+      lineage: {last_temp: [], n_2h: [], gaps_2h: [n1, n2]}
+
+  - name: degenerate_single_observation
+    description: >-
+      One reading. The mean is that reading, the range is zero, and the variance is
+      undefined — not zero, which would claim a stability nothing supports.
+    records:
+      - {id: only, event_time: "2024-01-01T11:30:00Z", value: 7.0}
+    specs:
+      - {name: n_2h, op: window, window: 2h, aggregate: count}
+      - {name: mean_2h, op: window, window: 2h, aggregate: mean}
+      - {name: min_2h, op: window, window: 2h, aggregate: min}
+      - {name: max_2h, op: window, window: 2h, aggregate: max}
+      - {name: var_2h, op: window, window: 2h, aggregate: variance}
+      - {name: sd_2h, op: window, window: 2h, aggregate: stddev}
+    prediction_time: "2024-01-01T12:00:00Z"
+    expect:
+      values: {n_2h: 1.0, mean_2h: 7.0, min_2h: 7.0, max_2h: 7.0, var_2h: null, sd_2h: null}
+      lineage: {var_2h: [], mean_2h: [only]}
+
+  - name: degenerate_identical_values_have_zero_variance
+    description: Genuinely zero variance, distinguished from the undefined case above.
+    records:
+      - {id: a, event_time: "2024-01-01T11:15:00Z", value: 5.0}
+      - {id: b, event_time: "2024-01-01T11:30:00Z", value: 5.0}
+      - {id: c, event_time: "2024-01-01T11:45:00Z", value: 5.0}
+    specs:
+      - {name: var_2h, op: window, window: 2h, aggregate: variance}
+      - {name: sd_2h, op: window, window: 2h, aggregate: stddev}
+    prediction_time: "2024-01-01T12:00:00Z"
+    expect:
+      values: {var_2h: 0.0, sd_2h: 0.0}
+
+  - name: degenerate_window_misses_by_one_second
+    description: >-
+      A record one second outside the window. The left edge is open, and being just outside
+      it is the same as being far outside it.
+    records:
+      - {id: just_outside, event_time: "2024-01-01T10:59:59Z", value: 1.0}
+    specs:
+      - {name: n_1h, op: window, window: 1h, aggregate: count}
+    prediction_time: "2024-01-01T12:00:00Z"
+    expect:
+      values: {n_1h: 0.0}
+      lineage: {n_1h: []}
+
+  - name: degenerate_window_includes_by_one_second
+    description: The same record one second later is inside.
+    records:
+      - {id: just_inside, event_time: "2024-01-01T11:00:01Z", value: 1.0}
+    specs:
+      - {name: n_1h, op: window, window: 1h, aggregate: count}
+    prediction_time: "2024-01-01T12:00:00Z"
+    expect:
+      values: {n_1h: 1.0}
+      lineage: {n_1h: [just_inside]}
+
+  - name: degenerate_negative_and_zero_values_are_data
+    description: >-
+      Zero is a measurement, not a missing value. An implementation testing truthiness rather
+      than nullity would drop the zero and shift every aggregate.
+    records:
+      - {id: z, event_time: "2024-01-01T11:15:00Z", value: 0.0}
+      - {id: neg, event_time: "2024-01-01T11:30:00Z", value: -4.0}
+      - {id: pos, event_time: "2024-01-01T11:45:00Z", value: 4.0}
+    specs:
+      - {name: n_2h, op: window, window: 2h, aggregate: count}
+      - {name: mean_2h, op: window, window: 2h, aggregate: mean}
+      - {name: min_2h, op: window, window: 2h, aggregate: min}
+      - {name: sum_2h, op: window, window: 2h, aggregate: sum}
+      - {name: last_temp, op: last_value}
+    prediction_time: "2024-01-01T12:00:00Z"
+    expect:
+      values: {n_2h: 3.0, mean_2h: 0.0, min_2h: -4.0, sum_2h: 0.0, last_temp: 4.0}
+      lineage: {last_temp: [pos]}
+
+  - name: degenerate_zero_is_returned_as_a_last_value
+    description: A newest reading of zero must be returned, not treated as absent.
+    records:
+      - {id: earlier, event_time: "2024-01-01T11:00:00Z", value: 9.0}
+      - {id: zero, event_time: "2024-01-01T11:45:00Z", value: 0.0}
+    specs:
+      - {name: last_temp, op: last_value}
+    prediction_time: "2024-01-01T12:00:00Z"
+    expect:
+      values: {last_temp: 0.0}
+      lineage: {last_temp: [zero]}
+
+  - name: degenerate_missing_count_with_no_records_at_all
+    description: An entirely absent stream is entirely missing, not zero-missing.
+    records: []
+    specs:
+      - {name: gaps_4h, op: missing_count, window: 4h, expected_interval: 1h}
+    prediction_time: "2024-01-01T12:00:00Z"
+    expect:
+      values: {gaps_4h: 4.0}
+      lineage: {gaps_4h: []}
+
+  - name: degenerate_staleness_of_a_reading_taken_now
+    description: A reading whose event time is the prediction time has age zero, not null.
+    records:
+      - {id: now, event_time: "2024-01-01T12:00:00Z", value: 3.0}
+    specs:
+      - {name: age, op: staleness}
+    prediction_time: "2024-01-01T12:00:00Z"
+    expect:
+      values: {age: 0.0}
+      lineage: {age: [now]}
+
+  - name: degenerate_very_old_record_is_still_last_known
+    description: >-
+      Without a staleness bound, a year-old reading is still the last known value. Whether
+      that is wise is the program author's decision; the operator's job is to be predictable.
+    records:
+      - {id: ancient, event_time: "2023-01-01T12:00:00Z", value: 42.0}
+    specs:
+      - {name: last_temp, op: last_value}
+      - {name: bounded, op: last_value, max_staleness: 24h}
+    prediction_time: "2024-01-01T12:00:00Z"
+    expect:
+      values: {last_temp: 42.0, bounded: null}
+      lineage: {last_temp: [ancient], bounded: []}

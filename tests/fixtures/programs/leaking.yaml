@@ -1,0 +1,153 @@
+# Programs that reach for information the system would not have had.
+#
+# Every one MUST be rejected, and rejected with a code in the E-TIME family: a rejection
+# carrying the wrong code is as damaging to the H2b measurement as no rejection, because the
+# codes are the rows of the confusion matrix.
+#
+# This file is deliberately short, and the reason is the contribution rather than an
+# oversight. Most temporal leaks that an unrestricted-Python feature generator can express —
+# reading a future row, joining on event time, fitting a scaler on the whole column — have no
+# encoding in this DSL at all. They are prevented by *construction* and so cannot appear in a
+# corpus of writable programs. What remains here is the residue: leaks that survive the
+# restriction and must be caught by *verification*. See UNREPRESENTABLE_LEAKS in
+# src/vifusion/compiler/audit.py for the ones that cannot be written.
+family: leaking
+
+sources:
+  - source_id: station
+    feature_name: temp
+    kind: measurement
+    value_type: number
+    unit: kelvin
+    max_input_rate_per_hour: 4
+  - source_id: nwp
+    feature_name: temp_fc
+    kind: forecast
+    value_type: number
+    unit: kelvin
+    max_input_rate_per_hour: 2
+    max_forecast_horizon: 48h
+
+programs:
+  - name: leak_lag_reaches_forward
+    description: >-
+      A negative lag addresses an event *after* the prediction time. The most direct
+      expressible leak: it names a row that does not exist yet.
+    expected_family: E-TIME
+    expected_code: E-TIME-002
+    nodes:
+      - {id: t, op: lag, params: {source: station, feature: temp, lag: -1h}}
+    outputs: [t]
+
+  - name: leak_lag_of_zero_reads_the_prediction_instant
+    description: >-
+      A zero lag addresses the prediction time itself by event time. Whether an event
+      stamped exactly now has arrived is an availability question, and a lag operator must
+      not be the place that answers it.
+    expected_family: E-TIME
+    expected_code: E-TIME-002
+    nodes:
+      - {id: t, op: lag, params: {source: station, feature: temp, lag: 0s}}
+    outputs: [t]
+
+  - name: leak_window_of_zero_length
+    description: A non-positive window selects nothing or reaches forward; neither is meaningful.
+    expected_family: E-TIME
+    expected_code: E-TIME-001
+    nodes:
+      - {id: m, op: mean, params: {source: station, feature: temp, window: 0s}}
+    outputs: [m]
+
+  - name: leak_window_reaches_forward
+    description: A negative window is a forward-looking aggregate written as a trailing one.
+    expected_family: E-TIME
+    expected_code: E-TIME-001
+    nodes:
+      - {id: m, op: mean, params: {source: station, feature: temp, window: -6h}}
+    outputs: [m]
+
+  - name: leak_missing_count_window_reaches_forward
+    description: The same forward reach through a different operator.
+    expected_family: E-TIME
+    expected_code: E-TIME-001
+    nodes:
+      - {id: g, op: missing_count, params: {source: station, feature: temp, window: -6h, expected_interval: 1h}}
+    outputs: [g]
+
+  - name: leak_negative_staleness_bound
+    description: >-
+      A negative freshness bound admits only observations from the future, inverting the
+      operator it decorates.
+    expected_family: E-TIME
+    expected_code: E-TIME-001
+    nodes:
+      - {id: t, op: last, params: {source: station, feature: temp, max_staleness: -1h}}
+    outputs: [t]
+
+  - name: leak_aggregate_over_a_forecast_stream
+    description: >-
+      A trailing mean over a forecast source. It looks entirely reasonable and is the subtlest
+      leak in this file: aggregating forecasts by event time pools issues describing different
+      valid times, so the window silently spans the future the forecasts describe.
+    expected_family: E-TIME
+    expected_code: E-TIME-003
+    nodes:
+      - {id: m, op: mean, params: {source: nwp, feature: temp_fc, window: 6h}}
+    outputs: [m]
+
+  - name: leak_last_value_over_a_forecast_stream
+    description: >-
+      The last-known *forecast*, read as though it were an observation. It returns a value
+      describing a time that has not happened.
+    expected_family: E-TIME
+    expected_code: E-TIME-003
+    nodes:
+      - {id: t, op: last, params: {source: nwp, feature: temp_fc}}
+    outputs: [t]
+
+  - name: leak_lag_over_a_forecast_stream
+    description: An autoregressive feature over forecasts rather than observations.
+    expected_family: E-TIME
+    expected_code: E-TIME-003
+    nodes:
+      - {id: t, op: lag, params: {source: nwp, feature: temp_fc, lag: 1h}}
+    outputs: [t]
+
+  - name: leak_forecast_operator_over_an_observed_stream
+    description: >-
+      The mirror image: selecting an "issue" from a stream that has none. The operator would
+      have to invent an issue time, and inventing one is how a measurement becomes a
+      prediction about the future.
+    expected_family: E-TIME
+    expected_code: E-TIME-003
+    nodes:
+      - {id: f, op: forecast, params: {source: station, feature: temp, lead: 3h}}
+    outputs: [f]
+
+  - name: leak_forecast_aggregate_feeding_arithmetic
+    description: >-
+      The leak buried one level down, where a reviewer of the output table would not see it:
+      the offending node is an input, and only the combination is reported.
+    expected_family: E-TIME
+    expected_code: E-TIME-003
+    nodes:
+      - {id: bad, op: mean, params: {source: nwp, feature: temp_fc, window: 6h}}
+      - {id: obs, op: last, params: {source: station, feature: temp}}
+      - {id: combined, op: subtract, inputs: [obs, bad]}
+    outputs: [combined]
+
+  - name: leak_hidden_among_valid_features
+    description: >-
+      One forward-reaching lag among six defensible features. A program is rejected if any
+      node leaks, not if most of it is sound.
+    expected_family: E-TIME
+    expected_code: E-TIME-002
+    nodes:
+      - {id: t_now, op: last, params: {source: station, feature: temp}}
+      - {id: t_mean, op: mean, params: {source: station, feature: temp, window: 6h}}
+      - {id: t_sd, op: stddev, params: {source: station, feature: temp, window: 6h}}
+      - {id: age, op: staleness, params: {source: station, feature: temp}}
+      - {id: fc, op: forecast, params: {source: nwp, feature: temp_fc, lead: 3h}}
+      - {id: peek, op: lag, params: {source: station, feature: temp, lag: -30m}}
+      - {id: anomaly, op: subtract, inputs: [t_now, t_mean]}
+    outputs: [t_now, t_mean, t_sd, age, fc, peek, anomaly]
