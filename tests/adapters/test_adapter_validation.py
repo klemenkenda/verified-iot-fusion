@@ -207,7 +207,9 @@ def test_a_file_with_the_wrong_column_count_is_refused(tmp_path) -> None:  # typ
     """
     updates = tmp_path / "updates"
     updates.mkdir()
-    (updates / "CRNH0203-2024010101.txt").write_text("94074 20240101 0100 1.0\n", encoding="utf-8")
+    (updates / "CRN60H0203-202401010200.txt").write_text(
+        "94074 20240101 0100 1.0\n", encoding="utf-8"
+    )
     with pytest.raises(AdapterError, match=f"not {uscrn.FIELD_COUNT}"):
         uscrn.read_updates(updates)
 

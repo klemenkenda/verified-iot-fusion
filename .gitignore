@@ -19,6 +19,7 @@ experiments/**/*.duckdb
 .env
 .env.*
 !.env.example
+.kaggle/
 
 # Python
 __pycache__/

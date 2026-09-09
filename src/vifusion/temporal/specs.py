@@ -99,6 +99,21 @@ class FeatureSpec:
         return True
 
     @property
+    def reads_window(self) -> bool:
+        """Whether this spec reads the *retained window* rather than the newest observation.
+
+        The distinction decides how much history the engine keeps, and it is not the same
+        question as :attr:`lookback`. ``last`` under a staleness bound has a lookback — the
+        bound — but it never looks past the newest observation: it takes that record and then
+        checks whether it is fresh enough. Sizing a stream's buffer from its bound therefore
+        retains a day of records to answer a question about one, and — worse — retains more
+        than the compiler declared, since the compiler correctly bounds that operator at a
+        single record. The two disagreed until an automated search wrote a program pairing a
+        24-hour staleness bound with a 3-hour window, which no hand-written program had.
+        """
+        return False
+
+    @property
     def lookback(self) -> timedelta | None:
         """Longest event-time reach of this spec, or None when it is unbounded.
 
@@ -138,6 +153,10 @@ class Lag(FeatureSpec):
     def lookback(self) -> timedelta | None:
         return self.lag
 
+    @property
+    def reads_window(self) -> bool:
+        return True
+
 
 @dataclass(frozen=True, kw_only=True)
 class WindowAggregate(FeatureSpec):
@@ -149,6 +168,10 @@ class WindowAggregate(FeatureSpec):
     @property
     def lookback(self) -> timedelta | None:
         return self.window
+
+    @property
+    def reads_window(self) -> bool:
+        return True
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -171,6 +194,10 @@ class MissingCount(FeatureSpec):
     @property
     def lookback(self) -> timedelta | None:
         return self.window
+
+    @property
+    def reads_window(self) -> bool:
+        return True
 
 
 @dataclass(frozen=True, kw_only=True)

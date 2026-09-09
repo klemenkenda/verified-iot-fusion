@@ -199,7 +199,10 @@ SOURCES: tuple[CsvSource, ...] = (
         event_column="datetime",
         features=(
             ("temperature", "degC"),
-            ("surface_solar_radiation_downwards", "watt_hour / meter ** 2"),
+            # Same physical quantity as forecast_weather.csv's surface_solar_radiation_downwards,
+            # under the name Open-Meteo's historical API uses rather than ECMWF's forecast one --
+            # the two files come from different upstream providers and were never harmonised.
+            ("shortwave_radiation", "watt_hour / meter ** 2"),
         ),
         key_columns=("latitude", "longitude"),
         description="Measured weather at a grid point.",
@@ -301,10 +304,11 @@ def read(
             f"{[source.filename for source in SOURCES]}"
         )
 
-    unit_ids = _unit_ids(root, entities)
+    unit_lookup = _unit_lookup(root)
+    unit_ids = _unit_ids(root, entities, unit_lookup)
     records: list[CanonicalRecord] = []
     for source in present:
-        records.extend(_read_source(root, source, schedule, unit_ids, broadcast))
+        records.extend(_read_source(root, source, schedule, unit_ids, broadcast, unit_lookup))
 
     return DatasetBundle(
         dataset=DATASET_NAME,
@@ -335,14 +339,66 @@ def _variant(source: CsvSource, row: dict[str, str], path: Path, line: int) -> s
     )
 
 
-def _unit_ids(root: Path, entities: Sequence[str] | None) -> tuple[str, ...]:
-    if entities is not None:
-        return tuple(str(entity) for entity in entities)
+UNIT_KEY_COLUMNS = ("county", "is_business", "product_type")
+"""Columns that, together, identify a prediction unit wherever a file does not carry
+``prediction_unit_id`` itself. ``client.csv`` is exactly this case: the competition publishes
+the attributes that determine a unit there, not the id, and the correspondence must be read
+off ``train.csv`` — the file that carries both."""
+
+
+def _unit_lookup(root: Path) -> dict[tuple[str, ...], str]:
+    """Maps :data:`UNIT_KEY_COLUMNS` to ``prediction_unit_id``, built from ``train.csv``.
+
+    Checked rather than assumed one-to-one: a competition update that split a unit across two
+    ids would otherwise attribute a client's rows to the wrong one silently."""
     train = root / "train.csv"
     if not train.exists():
+        return {}
+    lookup: dict[tuple[str, ...], str] = {}
+    for line, row in _rows(train):
+        key = tuple(_require(row, column, train, line).strip() for column in UNIT_KEY_COLUMNS)
+        unit = _require(row, "prediction_unit_id", train, line).strip()
+        existing = lookup.get(key)
+        if existing is not None and existing != unit:
+            raise AdapterError(
+                f"train.csv:{line} maps {UNIT_KEY_COLUMNS}={key} to prediction_unit_id "
+                f"{unit!r}, but an earlier row mapped the same key to {existing!r}; the "
+                "adapter assumes this correspondence is one-to-one"
+            )
+        lookup[key] = unit
+    return lookup
+
+
+def _unit_ids(root: Path, entities: Sequence[str] | None, unit_lookup: dict[tuple[str, ...], str]) -> tuple[str, ...]:
+    if entities is not None:
+        return tuple(str(entity) for entity in entities)
+    if not unit_lookup:
         return (GLOBAL_ENTITY,)
-    found = {_require(row, "prediction_unit_id", train, line).strip() for line, row in _rows(train)}
-    return tuple(sorted(found))
+    return tuple(sorted(set(unit_lookup.values())))
+
+
+def _owning_units(
+    source: CsvSource,
+    row: dict[str, str],
+    path: Path,
+    line: int,
+    unit_lookup: dict[tuple[str, ...], str],
+) -> tuple[str, ...]:
+    """The prediction unit(s) a unit-scoped row belongs to.
+
+    ``train.csv`` names its unit directly; ``client.csv`` does not, and is resolved through
+    :data:`UNIT_KEY_COLUMNS` against the mapping :func:`_unit_lookup` built from ``train.csv``.
+    """
+    if "prediction_unit_id" in row:
+        return (_require(row, "prediction_unit_id", path, line).strip(),)
+    key = tuple(_require(row, column, path, line).strip() for column in UNIT_KEY_COLUMNS)
+    unit = unit_lookup.get(key)
+    if unit is None:
+        raise AdapterError(
+            f"{path.name}:{line} has {UNIT_KEY_COLUMNS}={key}, which train.csv's "
+            "prediction_unit_id mapping does not cover"
+        )
+    return (unit,)
 
 
 def _read_source(
@@ -351,6 +407,7 @@ def _read_source(
     schedule: BlockSchedule,
     unit_ids: tuple[str, ...],
     broadcast: bool,
+    unit_lookup: dict[tuple[str, ...], str],
 ) -> Iterator[CanonicalRecord]:
     path = root / source.filename
     for line, row in _rows(path):
@@ -384,7 +441,7 @@ def _read_source(
         variant = _variant(source, row, path, line)
         owners: tuple[str, ...]
         if source.scope == "unit":
-            owners = (_require(row, "prediction_unit_id", path, line).strip(),)
+            owners = _owning_units(source, row, path, line, unit_lookup)
         elif broadcast:
             owners = unit_ids
         else:

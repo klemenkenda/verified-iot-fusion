@@ -98,11 +98,29 @@ A parameter of the experiment, not a fact about NCEI: the final product does not
 each value was released. It is recorded in the manifest as a simulated model's parameter,
 and section 10.1's sensitivity analysis is where its influence is measured."""
 
-_UPDATE_FILENAME = re.compile(r"^CRNH0203-(?P<stamp>\d{10})\.txt$")
-"""``CRNH0203-YYYYMMDDHH.txt``: the hour whose dissemination the file carries.
+_UPDATE_FILENAME = re.compile(
+    r"^CRN(?P<freq>\d{2})H02(?P<file_format>\d{2})-(?P<stamp>\d{12})\.txt$"
+)
+"""``CRNFFH02TT-YYYYMMDDHHmm.txt``, transcribed from readme.txt section 4.C: FF is the
+dissemination frequency in minutes, TT the file format number, and the stamp carries minutes.
 
-Transcribed from the archive listing. The stamp is read as the *start* of the window, so the
-availability bound is one hour later — see the module docstring on why the close is used."""
+Both FF and TT are checked against :data:`EXPECTED_UPDATE_FREQUENCY_MINUTES` and
+:data:`EXPECTED_UPDATE_FILE_FORMAT` — a format change shifts columns exactly as the two
+listed in readme.txt did, and parsing a changed layout under the old one produces a plausible
+wrong number rather than an error.
+
+The stamp is the window's *close*, not its open: readme.txt states each file covers "the
+period of time lasting 'FF' minutes and ending at" the stamped instant. Reading it as the open
+would place the availability bound an hour early, the opposite of the safe direction the
+module docstring requires."""
+
+EXPECTED_UPDATE_FREQUENCY_MINUTES = 60
+"""The FF segment this adapter is written for; matches :data:`DISSEMINATION_WINDOW`."""
+
+EXPECTED_UPDATE_FILE_FORMAT = "03"
+"""The TT segment this adapter is written for — format 03, current since 2013-01-07 15:00 UTC
+per readme.txt section 4.A. :data:`FIELD_COUNT` and the column indices below are transcribed
+for this format only."""
 
 
 @dataclass(frozen=True)
@@ -180,16 +198,26 @@ def window_of(path: Path) -> tuple[datetime, datetime]:
     if match is None:
         raise AdapterError(
             f"{path.name} is not a USCRN hourly update file; expected the form "
-            "CRNH0203-YYYYMMDDHH.txt, whose stamp names the dissemination hour"
+            "CRNFFH02TT-YYYYMMDDHHmm.txt, whose stamp names the dissemination window's close"
         )
-    stamp = match["stamp"]
+    freq, file_format, stamp = match["freq"], match["file_format"], match["stamp"]
+    if int(freq) != EXPECTED_UPDATE_FREQUENCY_MINUTES:
+        raise AdapterError(
+            f"{path.name} declares a {freq}-minute dissemination frequency; this adapter is "
+            f"written for {EXPECTED_UPDATE_FREQUENCY_MINUTES}"
+        )
+    if file_format != EXPECTED_UPDATE_FILE_FORMAT:
+        raise AdapterError(
+            f"{path.name} is file format {file_format!r}; FIELD_COUNT and the column indices "
+            f"in this adapter are transcribed for format {EXPECTED_UPDATE_FILE_FORMAT!r} only"
+        )
     try:
-        start = datetime.strptime(stamp, "%Y%m%d%H").replace(tzinfo=UTC)
+        close = datetime.strptime(stamp, "%Y%m%d%H%M").replace(tzinfo=UTC)
     except ValueError as error:
-        raise AdapterError(f"{path.name} carries an unparseable dissemination hour: {error}") from (
-            error
-        )
-    return start, start + DISSEMINATION_WINDOW
+        raise AdapterError(
+            f"{path.name} carries an unparseable dissemination close: {error}"
+        ) from (error)
+    return close - DISSEMINATION_WINDOW, close
 
 
 def _observation_time(fields: Sequence[str], path: Path, line_number: int) -> datetime:
@@ -211,10 +239,52 @@ def _observation_time(fields: Sequence[str], path: Path, line_number: int) -> da
     return day + timedelta(hours=hour, minutes=minute)
 
 
+_ENVELOPE_START = re.compile(r"^\*{4}\d+\*{4}$")
+_ENVELOPE_WMO_HEADER = re.compile(r"^\S+ [A-Z]{4} \d{6}$")
+_ENVELOPE_PRODUCT_ID = re.compile(r"^CRNH02$")
+
+_TRANSMISSION_TRAILER = "\x03"
+"""GTS bulletins close with an ASCII ETX (End of Text) control character on its own line, and
+NCEI's archive keeps it. It cannot collide with a data row — no station line is a single
+control character — so it is dropped on sight rather than treated as envelope evidence that
+must line up three-in-a-row the way the header is."""
+
+
+def _envelope_line_numbers(numbered: Sequence[tuple[int, str]]) -> frozenset[int]:
+    """Line numbers of the NOAAPort/WMO bulletin envelope opening ``numbered``, if present.
+
+    Update files are archived exactly as broadcast — readme.txt section 4.C: "broadcast over
+    NOAAPort (SXXX91 CRNH02)" — so what NCEI hands out is the raw GTS bulletin: a
+    start-of-message marker, a WMO abbreviated heading, and the product identifier line, ahead
+    of the fixed-width data rows. GTS bulletins terminate lines with CRCRLF, which Python's
+    universal-newline translation turns into a spurious blank line per terminator; ``numbered``
+    is expected to already have blank lines filtered out so that artefact cannot shift which
+    physical lines this checks. Hand-built fixtures carry no envelope at all; requiring all
+    three to match before naming any of them means a fixture is simply left alone, and anything
+    that only partly looks like an envelope still falls through to the row-width check below
+    and is rejected loudly rather than silently misread.
+    """
+    if len(numbered) < 3:
+        return frozenset()
+    (n0, l0), (n1, l1), (n2, l2) = numbered[0], numbered[1], numbered[2]
+    if (
+        _ENVELOPE_START.match(l0)
+        and _ENVELOPE_WMO_HEADER.match(l1)
+        and _ENVELOPE_PRODUCT_ID.match(l2)
+    ):
+        return frozenset({n0, n1, n2})
+    return frozenset()
+
+
 def _rows(path: Path) -> Iterator[tuple[int, list[str]]]:
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        text = line.strip()
-        if not text:
+    numbered = [
+        (line_number, stripped)
+        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1)
+        if (stripped := line.strip()) and stripped != _TRANSMISSION_TRAILER
+    ]
+    envelope = _envelope_line_numbers(numbered)
+    for line_number, text in numbered:
+        if line_number in envelope:
             continue
         fields = text.split()
         if len(fields) != FIELD_COUNT:
@@ -250,11 +320,11 @@ def update_files(root: Path) -> tuple[Path, ...]:
     The archive nests files by year; the order that matters is the window, not the directory,
     so files are sorted by the window their name declares rather than by path.
     """
-    found = sorted(root.rglob("CRNH0203-*.txt"), key=lambda path: window_of(path)[0])
+    found = sorted(root.rglob("CRN??H02??-*.txt"), key=lambda path: window_of(path)[0])
     if not found:
         raise AdapterError(
             f"no USCRN hourly update files under {root}; expected files named "
-            "CRNH0203-YYYYMMDDHH.txt, as published under " + UPDATE_ARCHIVE
+            "CRNFFH02TT-YYYYMMDDHHmm.txt, as published under " + UPDATE_ARCHIVE
         )
     return tuple(found)
 

@@ -232,13 +232,24 @@ class FeatureEngine:
                     min_lead=min(spec.lead for spec in forecast_specs)
                 )
             if other_specs:
-                # Retention is driven by the longest *bounded* reach on the stream. A spec
-                # with no bounded reach — an unbounded last-value, or staleness — is served
-                # by the single retained last-known record instead, so it must not shorten
-                # the window that the bounded specs on the same stream depend on. Taking the
-                # maximum over all lookbacks including the unbounded ones would invert that:
-                # adding an unbounded spec would silently empty the window of its neighbours.
-                bounded = [spec.lookback for spec in other_specs if spec.lookback is not None]
+                # Retention is driven by the longest bounded reach of the specs that
+                # actually *read the window*. Two exclusions, for different reasons.
+                #
+                # A spec with no bounded reach — an unbounded last-value, or staleness — is
+                # served by the single retained last-known record, so it must not shorten the
+                # window its neighbours depend on. Taking the maximum over all lookbacks
+                # including the unbounded ones would invert that.
+                #
+                # A spec with a bounded reach that never reads the window — ``last`` under a
+                # staleness bound — must not *lengthen* it either. It takes the newest
+                # observation and checks its age; a day-long bound would otherwise retain a
+                # day of records to answer a question about one, and would exceed the bound
+                # the compiler declared, which correctly counts that operator as one record.
+                bounded = [
+                    spec.lookback
+                    for spec in other_specs
+                    if spec.reads_window and spec.lookback is not None
+                ]
                 self._streams[stream] = StreamState(
                     bounded_lookback=max(bounded) if bounded else None,
                     state_bound=state_bound,

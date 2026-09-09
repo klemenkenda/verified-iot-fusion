@@ -56,7 +56,7 @@ def test_uscrn_reconstructs_a_bound_from_the_dissemination_window(
     for record in updates:
         derivation = derivation_of(record)
         assert derivation.model == "bounded"
-        assert derivation.evidence.startswith("CRNH0203-")
+        assert derivation.evidence.startswith("CRN60H0203-")
         # The bound is the window close, so availability lands exactly on an hour boundary.
         assert record.available_time.minute == 0 and record.available_time.second == 0
 
@@ -71,8 +71,8 @@ def test_a_relayed_observation_is_available_only_when_it_was_relayed(
         if record.record_id == "uscrn:53131:t_calc:20240101T0100"
     )
     assert relayed.event_time.hour == 1
-    assert relayed.available_time.hour == 4, "relayed in the 03:00 window, so available at 04:00"
-    assert derivation_of(relayed).evidence == "CRNH0203-2024010103.txt"
+    assert relayed.available_time.hour == 4, "relayed in the window closing at 04:00"
+    assert derivation_of(relayed).evidence == "CRN60H0203-202401010400.txt"
 
 
 def test_uscrn_final_values_are_labelled_simulated(uscrn_bundle: DatasetBundle) -> None:

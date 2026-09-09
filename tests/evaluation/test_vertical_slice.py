@@ -37,7 +37,7 @@ def result(slice_repo: Path, slice_task: TaskConfig) -> experiment.ExperimentRes
 
 def test_every_method_produces_a_score(result: experiment.ExperimentResult) -> None:
     """The exit criterion of the slice: the whole path runs and emits numbers."""
-    assert [item.method_id for item in result.results] == ["M0", "M1", "M2"]
+    assert [item.method_id for item in result.results] == ["M0", "M1", "M2", "M3", "M3r"]
     for item in result.results:
         assert item.test_examples > 0
         assert item.train_examples > 0
@@ -161,14 +161,14 @@ def test_the_run_writes_a_manifest_and_a_generated_table(
     table = (tmp_path / "results.txt").read_text(encoding="utf-8")
     assert "MAE" in table and "M0" in table and "M2" in table
     scores = json.loads((tmp_path / "scores.json").read_text(encoding="utf-8"))
-    assert {item["method_id"] for item in scores["results"]} == {"M0", "M1", "M2"}
+    assert {item["method_id"] for item in scores["results"]} == {"M0", "M1", "M2", "M3", "M3r"}
 
     written = read_manifest(tmp_path / "manifest.json")
     assert written.run_id == manifest.run_id
     assert written.split_manifest_hash == result.split_manifest_hash
     assert written.task_config_hash == result.task_config_hash
     assert written.raw_data_hashes == result.raw_data_hashes
-    assert set(written.metrics) == {"M0", "M1", "M2"}
+    assert set(written.metrics) == {"M0", "M1", "M2", "M3", "M3r"}
     # Every method's program hash is recoverable from the manifest, not just their union.
     for item in result.results:
         assert f"{item.method_id}={item.program_hash}" in (written.feature_program_hash or "")

@@ -42,9 +42,12 @@ from vifusion.evaluation.tasks import (
     build_examples,
     label_index,
     revealed_by,
+    with_features,
 )
 from vifusion.manifest import ArtifactRef, RunManifest, new_run_id, write_manifest
-from vifusion.models import predictors
+from vifusion.models import predictors, search
+from vifusion.models.search import SearchBudget, SearchReport
+from vifusion.models.search_space import Candidate, SearchSpace, enumerate_candidates
 from vifusion.runtime import streaming
 from vifusion.runtime.batch import BATCH_LOWERINGS
 from vifusion.temporal.replay import PredictionRequest
@@ -52,9 +55,42 @@ from vifusion.temporal.replay import PredictionRequest
 _SOURCE_DIR = Path(__file__).resolve().parents[1]
 
 DEFAULT_RIDGE_PENALTY = 1.0
-"""Frozen for the slice. Section 9.4 requires the downstream hyperparameter budget to be
-declared before official runs; one value is the smallest honest declaration, and tuning it
-is Phase 6 work with a validation fold, not something to do while looking at test scores."""
+"""Used where a single penalty is needed — during a search, so that the budget counts feature
+subsets rather than subsets times penalties."""
+
+RIDGE_PENALTY_GRID: tuple[float, ...] = (0.01, 0.1, 1.0, 10.0, 100.0)
+"""The declared downstream hyperparameter budget: five fits per method (decided 2026-09-10).
+
+Section 9.4 requires this to be frozen before official runs and lists it *separately* from
+the search budget, which is the right separation — tuning a predictor is not proposing a
+feature, and pooling them would let a method buy feature evaluations by declining to tune.
+
+Five decades, chosen for shape rather than tuned: the penalty's job here is to keep an
+ill-conditioned design from producing enormous weights, and picking between 0.01 and 100 by
+validation score is enough for that. It is deliberately not a fine grid — a wide grid
+searched finely on validation is feature selection wearing a different hat, and the searching
+methods already have a budget for that.
+
+The chosen value is recorded per method in the results, because a penalty selected on
+validation is a decision made on data, and a decision made on data belongs in the manifest."""
+
+
+def budget_for(candidate_count: int, max_features: int, *, round_to: int = 500) -> int:
+    """The candidate-evaluation budget a task should declare (decided 2026-09-10).
+
+    ``max_features x candidates``, rounded up — the number a full greedy forward selection
+    needs to finish. It is the right anchor because it is the only figure in the comparison
+    that is a property of the *space* rather than of a strategy: random search will spend the
+    same number on subsets, and the LLM conditions will spend it on proposals.
+
+    Equal within a task, not across tasks. A dataset with more streams has a larger space and
+    needs more search to cover it; giving every dataset the same absolute number would hand
+    the smallest dataset the most thorough search, which is not what fairness means here.
+    """
+    if candidate_count < 1 or max_features < 1:
+        raise TaskError("a budget needs at least one candidate and one feature")
+    exact = candidate_count * max_features
+    return ((exact + round_to - 1) // round_to) * round_to
 
 
 @dataclass(frozen=True)
@@ -73,6 +109,33 @@ class MethodResult:
     test_examples: int
     scores: metrics.Scores
 
+    penalty: float | None = None
+    """The ridge penalty chosen from the declared grid, or None for an unfitted predictor."""
+
+    tuned_on: str = ""
+    """The fold the penalty was chosen on. Scoring on it is, to that extent, in-sample."""
+
+    search: SearchReport | None = None
+    """Present when the method searched for its features rather than being given them."""
+
+    program: dict[str, Any] | None = None
+    """The discovered program, for a searching method. Written beside the results so that a
+    reviewer can read what the search actually chose rather than trusting a hash."""
+
+    @property
+    def selected_in_sample(self) -> bool:
+        """True when this method made a data-driven choice on the fold it is scored on.
+
+        Covers both halves of that: choosing *features* by search, and choosing the ridge
+        penalty from the declared grid. Both are decisions made by looking at a fold, and a
+        method scored on the fold it looked at is reporting an in-sample number — which is
+        the normal state of affairs on validation and a trap at reporting time.
+        """
+        selected = self.search is not None and self.search.selected_on == self.scored_on
+        return selected or (bool(self.tuned_on) and self.tuned_on == self.scored_on)
+
+    scored_on: str = ""
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "method_id": self.method_id,
@@ -82,7 +145,11 @@ class MethodResult:
             "train_examples": self.train_examples,
             "train_examples_withheld": self.train_examples_withheld,
             "test_examples": self.test_examples,
+            "scored_on": self.scored_on,
+            "penalty": self.penalty,
+            "tuned_on": self.tuned_on,
             "scores": self.scores.as_dict(),
+            "search": None if self.search is None else self.search.as_dict(),
         }
 
 
@@ -120,14 +187,27 @@ class ExperimentResult:
         }
 
     def table(self) -> str:
-        return metrics.render_table(
+        text = metrics.render_table(
             [(result.method_id, result.scores) for result in self.results],
             title=f"{self.task} — {self.dataset} {self.fold} fold",
         )
+        # A searching method scored on the fold it selected on is reporting an in-sample
+        # number. Section 9.3 designates validation for feature search, so this is the normal
+        # state of affairs during development and a trap at reporting time — the table says so
+        # rather than leaving it to be remembered.
+        in_sample = [item.method_id for item in self.results if item.selected_in_sample]
+        if in_sample:
+            text += (
+                f"\n\nNOTE: {', '.join(in_sample)} selected features on this same fold; "
+                "these figures are in-sample. Compare methods on the test fold."
+            )
+        return text
 
 
 def compile_method(method: MethodSpec, root: Path) -> tuple[ExecutionPlan, str]:
-    """Compile a method's feature program, refusing one the verifier rejects."""
+    """Compile a method's written feature program, refusing one the verifier rejects."""
+    if method.program is None:
+        raise TaskError(f"method {method.id} declares no written program; it searches for one")
     program, diagnostics = parse_program(load_program(root / method.program))
     if program is None:
         raise TaskError(f"method {method.id}: {'; '.join(str(item) for item in diagnostics)}")
@@ -172,6 +252,8 @@ def run_method(
     entities: Sequence[str],
     *,
     penalty: float = DEFAULT_RIDGE_PENALTY,
+    report: SearchReport | None = None,
+    program: dict[str, Any] | None = None,
 ) -> MethodResult:
     """Fit one method on the training fold and score it on ``fold``.
 
@@ -203,6 +285,16 @@ def run_method(
         raise TaskError(f"method {method.id}: the {fold} fold produced no scored examples")
 
     names = usable[0].feature_names
+    chosen_penalty: float | None = None
+    tuned_on = ""
+    if method.predictor == "ridge":
+        tuning = examples_for(
+            plan, bundle, task, _requests(split, "validation", task, train_entities)
+        )
+        chosen_penalty = _tune_penalty(usable, tuning) if tuning else penalty
+        tuned_on = "validation" if tuning else ""
+        penalty = chosen_penalty
+
     model = predictors.build(
         method.predictor, feature_names=names, output=method.output, penalty=penalty
     )
@@ -221,6 +313,11 @@ def run_method(
         train_examples=len(usable),
         train_examples_withheld=withheld,
         test_examples=len(scoring),
+        scored_on=fold,
+        penalty=chosen_penalty,
+        tuned_on=tuned_on,
+        search=report,
+        program=program,
         scores=metrics.score(
             [example.target_value for example in scoring],
             list(predicted),
@@ -228,6 +325,29 @@ def run_method(
             scales=scales,
         ),
     )
+
+
+def _tune_penalty(training: Sequence[Example], validation: Sequence[Example]) -> float:
+    """Choose the ridge penalty from the declared grid by validation error.
+
+    Fits on the training rows only — the same rows the final model is fitted on, revealed by
+    the same cutoff — and scores on the validation fold. Ties go to the *larger* penalty: two
+    penalties that score identically are not equally good, and the more heavily regularised
+    model is the one less likely to be fitting the fold it was chosen on.
+    """
+    best = DEFAULT_RIDGE_PENALTY
+    best_error = float("inf")
+    for candidate in sorted(RIDGE_PENALTY_GRID):
+        model = predictors.Ridge(penalty=candidate)
+        model.fit(
+            [example.features for example in training],
+            [example.target_value for example in training],
+        )
+        predicted = model.predict([example.features for example in validation])
+        error = metrics.score([example.target_value for example in validation], list(predicted)).mae
+        if error <= best_error:
+            best, best_error = candidate, error
+    return best
 
 
 def _naive_scales(examples: Sequence[Example]) -> dict[str, float] | None:
@@ -251,6 +371,125 @@ def _naive_scales(examples: Sequence[Example]) -> dict[str, float] | None:
             # still stand, and a partial MASE would be worse than none.
             return None
     return scales
+
+
+def _selection_score(
+    training: Sequence[Example], validation: Sequence[Example], penalty: float
+) -> search.Score:
+    """A loss for one feature subset: fit on the training rows, score on the selection rows.
+
+    Both sets are precomputed once from a single replay of the whole candidate space, so an
+    evaluation costs a fit and a score rather than a replay. That is deliberate and it is what
+    section 9.4 means by counting *candidate evaluations*: the replay is shared infrastructure,
+    and the thing every searching method pays for one at a time is the model fit.
+    """
+
+    def score(subset: Sequence[Candidate]) -> float:
+        names = [candidate.node_id for candidate in subset]
+        if not names:
+            return float("inf")
+        fitting = with_features(training, names)
+        scoring = with_features(validation, names)
+        model = predictors.Ridge(penalty=penalty)
+        model.fit(
+            [example.features for example in fitting],
+            [example.target_value for example in fitting],
+        )
+        predicted = model.predict([example.features for example in scoring])
+        return metrics.score([example.target_value for example in scoring], list(predicted)).mae
+
+    return score
+
+
+def run_search(
+    method: MethodSpec,
+    bundle: DatasetBundle,
+    task: TaskConfig,
+    split: SplitManifest,
+    entities: Sequence[str],
+    *,
+    penalty: float = DEFAULT_RIDGE_PENALTY,
+) -> tuple[ExecutionPlan, str, SearchReport, dict[str, Any]]:
+    """Find a feature program by search, and return it compiled.
+
+    **Selection reads the training entities only.** A held-out entity is in the dataset for the
+    transfer claim of H5, and choosing features by how well they score on it would make that
+    claim circular — the features would already know the station they are supposed to
+    generalise to.
+    """
+    assert method.search is not None
+    space = SearchSpace(**method.search.space)
+    sources = bundle.searchable_sources()
+    proposed = enumerate_candidates(sources, space)
+    if not proposed:
+        raise TaskError(
+            f"method {method.id}: the search space is empty over "
+            f"{[source.source_id for source in sources]}"
+        )
+
+    accepted, rejected = search.validate_candidates(sources, proposed)
+    if not accepted:
+        raise TaskError(f"method {method.id}: the verifier rejected every candidate: {rejected}")
+
+    # One replay of every accepted candidate, shared by every evaluation below.
+    combined = search.program_document(f"{method.id}_space", sources, accepted)
+    parsed, diagnostics = parse_program(combined)
+    if parsed is None:
+        raise TaskError(f"method {method.id}: {'; '.join(str(d) for d in diagnostics)}")
+    compiled = compile_program(parsed, batch_lowerings=BATCH_LOWERINGS)
+    if not compiled.accepted or compiled.plan is None:
+        raise TaskError(
+            f"method {method.id}: the combined candidate program did not compile: "
+            + "; ".join(str(d) for d in compiled.diagnostics)
+        )
+
+    selecting = split.entities_for("train", tuple(entities))
+    history = examples_for(compiled.plan, bundle, task, _requests(split, "train", task, selecting))
+    training = revealed_by(history, split.train.end)
+    validation = examples_for(
+        compiled.plan, bundle, task, _requests(split, "validation", task, selecting)
+    )
+    if not training or not validation:
+        raise TaskError(
+            f"method {method.id}: no usable rows to select on — "
+            f"{len(training)} training, {len(validation)} validation"
+        )
+
+    budget = SearchBudget(
+        evaluations=method.search.evaluations,
+        max_features=method.search.max_features,
+        strategy=method.search.strategy,
+        seed=method.search.seed,
+    )
+    report = search.search(
+        accepted,
+        _selection_score(training, validation, penalty),
+        budget,
+        selected_on="validation",
+        proposed=len(proposed),
+        rejected_by_code=rejected,
+        space=space,
+    )
+
+    # In the order the search chose them, not in enumeration order: for forward selection
+    # that order is informative — the first feature picked is the one that helped most — and
+    # it keeps the discovered program's outputs aligned with what the report names.
+    by_id = {candidate.node_id: candidate for candidate in accepted}
+    chosen = [by_id[node_id] for node_id in report.selected]
+    document = search.program_document(
+        f"{method.id}_discovered", sources, chosen, catalogue=accepted
+    )
+    final, final_diagnostics = parse_program(document)
+    if final is None:
+        raise TaskError(f"method {method.id}: {'; '.join(str(d) for d in final_diagnostics)}")
+    result = compile_program(final, batch_lowerings=BATCH_LOWERINGS)
+    if not result.accepted or result.plan is None:
+        raise TaskError(
+            f"method {method.id}: the discovered program did not compile: "
+            + "; ".join(str(d) for d in result.diagnostics)
+        )
+    assert result.program_hash is not None
+    return result.plan, result.program_hash, report, document
 
 
 def run_task(
@@ -277,7 +516,14 @@ def run_task(
     card = cards.build(bundle, license=adapter.license, homepage=adapter.homepage)
     results = []
     for method in task.methods:
-        plan, program_hash = compile_method(method, repo_root)
+        report: SearchReport | None = None
+        document: dict[str, Any] | None = None
+        if method.search is not None:
+            plan, program_hash, report, document = run_search(
+                method, bundle, task, split, entities, penalty=penalty
+            )
+        else:
+            plan, program_hash = compile_method(method, repo_root)
         results.append(
             run_method(
                 method,
@@ -289,6 +535,8 @@ def run_task(
                 fold,
                 entities,
                 penalty=penalty,
+                report=report,
+                program=document,
             )
         )
 
@@ -323,6 +571,8 @@ def write_results(
     """
     import json
 
+    import yaml
+
     output_dir.mkdir(parents=True, exist_ok=True)
     started = now or datetime.now(UTC)
 
@@ -334,6 +584,19 @@ def write_results(
         encoding="utf-8",
         newline="\n",
     )
+
+    # A searched program is an experimental result, not an implementation detail: it is
+    # written out so that a reviewer can read what the search chose instead of inferring it
+    # from a hash and a feature count.
+    discovered: list[Path] = []
+    for item in result.results:
+        if item.program is None:
+            continue
+        path = output_dir / f"discovered_{item.method_id}.yaml"
+        path.write_text(
+            yaml.safe_dump(item.program, sort_keys=False), encoding="utf-8", newline="\n"
+        )
+        discovered.append(path)
 
     state = git_state(_SOURCE_DIR)
     manifest = RunManifest(
@@ -366,6 +629,7 @@ def write_results(
         artifacts=[
             _artifact(table_path),
             _artifact(scores_path),
+            *(_artifact(path) for path in discovered),
         ],
     )
     write_manifest(output_dir / "manifest.json", manifest)

@@ -870,3 +870,142 @@ freeze and expensive after it.
   that had not happened. Reporting the count rather than only enforcing the rule is what makes
   a pipeline that silently stopped enforcing it detectable — the number would go to zero.
 - **Phase / gate:** Phase 6, vertical slice
+
+### 2026-09-10 — M3 searches the same DSL the LLM will, and is budgeted in evaluations
+
+- **Decision:** the non-LLM baseline enumerates candidate features from the operator registry
+  and the *searchable* source surface, compiles each one through the same verifier, and
+  selects a subset under a budget counted in **candidate evaluations**. Two strategies are
+  reported: `greedy` forward selection and `random` subset sampling, given identical budgets.
+- **Rationale for the budget axis:** section 9.4 calls this the fairness crux and the first
+  thing a reviewer will attack. Random search can produce thousands of candidates for the
+  price of one LLM call, so equalising on calls would hand the LLM a hidden compute advantage
+  and equalising on wall time would reward whichever method has the lower API latency. What
+  every searching method pays for one at a time is the model fit, so that is what is counted.
+  The replay is shared infrastructure: one replay of the whole candidate space precedes the
+  search, and an evaluation is a fit and a score over precomputed columns.
+- **Rationale for reporting greedy as well as random:** the plan's own wording is "exhaustive
+  or random operator search", and random is the weaker baseline. Section 9.1 warns that a weak
+  M3 makes H1 unfalsifiable rather than easy, so forward selection is reported beside it at
+  the same budget. If M8 later beats random but not greedy, that is the result.
+- **Selection reads the training entities only.** A held-out station is in the dataset for
+  H5's transfer claim; choosing features by how well they score on it would make that claim
+  circular. Selection also obeys the delayed-label rule, so an unrevealed target cannot
+  influence which features are chosen any more than it can fit a weight.
+- **Selection happens on validation, and the table says so.** Section 9.3 designates the
+  validation interval for feature search, which means a searching method scored on validation
+  is reporting an in-sample number. `SearchReport.selected_on` records the fold and the
+  results table prints a warning when they coincide, because during development that is the
+  normal case and at reporting time it is a trap.
+- **Phase / gate:** Phase 6
+
+### 2026-09-10 — The candidate space is driven by declared parameters, not operator names
+
+- **Decision:** `search_space.enumerate_candidates` builds each candidate from the operator's
+  own `required_params` and `optional_params`, mapping each parameter name to a declared grid
+  in `SearchSpace`. A parameter with no grid raises rather than being skipped.
+- **Rationale:** the first version branched on `Operator.windowed`, which is true for `lag` —
+  it retains state, so of course it is windowed — and duly proposed every lag with a `window`
+  parameter. All twelve were rejected with `E-GRAPH-005`. The verifier working is not the
+  point: those were candidates the baseline never got to spend its budget on, and a silently
+  weakened baseline is exactly what section 9.1 warns against. Raising on an unmapped
+  parameter means a newly registered operator cannot go missing quietly.
+- **A second, smaller version of the same defect:** the cap on combined features was consumed
+  by whichever stream sorted first, so every arithmetic candidate landed on precipitation.
+  Now they are taken round-robin across streams.
+- **Regression tests:** `test_the_space_is_enumerated_from_the_registry`,
+  `test_every_generated_candidate_compiles`, `test_combined_features_are_spread_across_streams`.
+- **Phase / gate:** Phase 6
+
+### 2026-09-10 — The verifier's value is measurable against the non-LLM baseline too
+
+- **Finding, not a decision:** with the arithmetic cap raised, the enumerated space proposes
+  134 dimensionally invalid features out of 640 — subtracting an observation count from a
+  temperature — and the compiler rejects every one with `E-UNIT-001`. Under the default
+  bounded grid the rate is zero.
+- **Why it matters for the paper:** it makes the invalid-proposal rate of section 9.5 a
+  *comparison* rather than an anecdote about LLM output. An unguarded automated search
+  produces meaningless features at a measurable rate, and the same instrument catches them.
+  It is also the cleanest available demonstration that the verifier is not an LLM-specific
+  guardrail.
+- **Consequence for the budget:** a rejected candidate costs no evaluation — validation
+  happens before the search and reads no data — so an invalid proposal wastes generation, not
+  budget. That asymmetry should be stated when the LLM conditions report the same rate.
+- **Phase / gate:** Phase 6
+
+### 2026-09-10 — Primary metric is R-squared; H1's confirmatory test stays on paired errors
+
+- **Decision:** R-squared is the primary reported metric for the regression tasks, with MAE,
+  RMSE, MASE and mean signed bias reported beside it. Delegated to the assistant by the
+  researcher, who noted that for regression the choice matters little.
+- **Two caveats are recorded with it, because the choice is only safe if they are:**
+  1. R-squared measures against the *mean of the scored period*, which is a very weak baseline
+     for a series with a daily cycle. On the USCRN slice the naive floor scores R² = 0.72 while
+     its MASE is 1.87 — a respectable-looking number for a forecast that is worse than a
+     same-step naive one. MASE is the number that says whether a method beat what it has to
+     beat, and it is reported for exactly that reason.
+  2. Section 9.6 requires paired comparisons with a time-aware block bootstrap, and
+     R-squared has no per-instance decomposition to pair or resample — it is a ratio of two
+     sums over a whole fold. **H1's confirmatory test therefore runs on paired absolute
+     errors**, and R-squared leads the table. Both are reported; only one can carry an
+     interval.
+- **Regression test:** `test_r2_and_mase_can_disagree_about_a_naive_forecast`, built from the
+  real shape that produced the disagreement rather than from an invented one.
+- **Phase / gate:** Phase 6
+
+### 2026-09-10 — Downstream hyperparameter budget: five ridge penalties, chosen on validation
+
+- **Decision:** the ridge penalty is chosen from the frozen grid
+  `(0.01, 0.1, 1.0, 10.0, 100.0)` by validation error, five fits per method. The chosen value
+  and the fold it was chosen on are recorded per method in the results and the manifest. Ties
+  go to the larger penalty.
+- **Rationale:** section 9.4 requires the downstream hyperparameter budget to be frozen before
+  official runs and lists it separately from the search budget — the right separation, since
+  pooling them would let a method buy feature evaluations by declining to tune. Five decades
+  is enough to stop an ill-conditioned design producing enormous weights, and deliberately too
+  coarse to be feature selection in disguise.
+- **Consequence, made visible:** choosing a penalty on validation makes a validation score
+  in-sample to that extent. `MethodResult.selected_in_sample` now covers both a searched
+  feature set and a tuned penalty, and the results table prints the warning for either. On the
+  validation fold that is the normal state of affairs; at reporting time it is a trap.
+- **LightGBM** remains undeclared and uninstalled. Section 9.2 needs it as the nonlinear
+  reference before H1 can claim the effect is not model-specific, and it arrives with the `ml`
+  extra — bringing NumPy, and a determinism question of its own — in its own step.
+- **Phase / gate:** Phase 6
+
+### 2026-09-10 — The candidate-evaluation budget follows a rule, not a round number
+
+- **Decision:** a task declares `max_features x |candidates|`, rounded up to the next 500 —
+  `evaluation.experiment.budget_for`. For the USCRN one-hour task that is 264 candidates ×
+  12 features → **3500 evaluations**, given identically to every searching method on that task.
+- **Rationale:** it is the number a full greedy forward selection needs to finish, and it is a
+  property of the *space* rather than of a strategy, so random search spends the same number on
+  subsets and the LLM conditions will spend it on proposals. A round number chosen by feel
+  would be the first thing a reviewer asks about, and section 9.4 already calls budget
+  equalisation the fairness crux of the comparison.
+- **Equal within a task, not across tasks.** A dataset with more streams has a larger space
+  and needs more search to cover it; one absolute figure for every dataset would give the
+  smallest one the most thorough search.
+- **A rejected candidate costs no evaluation.** Validation happens before the search and reads
+  no data, so an invalid proposal wastes generation rather than budget. That asymmetry favours
+  the LLM conditions and should be stated when they report their invalid-proposal rate.
+- **Regression test:** `test_a_declared_budget_covers_the_space_it_searches` fails when the
+  registry or the grid grows, so the budget is re-frozen deliberately rather than drifting.
+- **Phase / gate:** Phase 6
+
+### 2026-09-10 — A staleness bound must not size the retained window
+
+- **Decision:** `FeatureSpec.reads_window` distinguishes specs that read the retained buffer
+  (window aggregates, missing counts, exact lags) from those served by the single last-known
+  record (`last`, `staleness`). The engine sizes each stream's buffer from the former only.
+- **Rationale:** `last` under a 24-hour staleness bound has a 24-hour *lookback* but never
+  looks past the newest observation — it takes that record and checks its age. Sizing the
+  buffer from its bound retained a day of records to answer a question about one, and, worse,
+  retained more than the compiler had declared: the compiler correctly bounds that operator at
+  a single record, so the two disagreed and the runtime raised `StateBoundError` on a program
+  that was perfectly sound.
+- **How it was found:** M3 wrote a program pairing a 24-hour staleness bound with a 3-hour
+  window. No hand-written program in the repository had that shape, and none of M0 to M2 would
+  have found it — the automated baseline exercised the engine in a way the expert program did
+  not, which is an argument for having built it properly.
+- **Phase / gate:** Phase 6

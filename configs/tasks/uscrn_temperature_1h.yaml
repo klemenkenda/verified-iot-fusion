@@ -23,8 +23,8 @@ prediction_interval: PT1H
 
 split: uscrn_primary
 
-# Methods, in the order the results table reports them. M3 and above arrive with the search
-# loop; M0 to M2 are what section 11.0 asks the slice to carry.
+# Methods, in the order the results table reports them. M4 is optional and M5 to M8 arrive
+# with the LLM loop; everything below is the non-LLM comparison the plan asks for.
 methods:
   - id: M0
     program: configs/programs/uscrn_m0_naive.yaml
@@ -49,8 +49,44 @@ methods:
       Expert-engineered features after the iot-fusion vocabulary: windowed statistics,
       staleness, gap counts, and within-source fusion. The human bar H1 must clear.
 
+  # The budget is 3500 candidate evaluations for both searching methods, from the rule in
+  # evaluation.experiment.budget_for: max_features x the candidate count the declared grid
+  # produces over this dataset's searchable sources, rounded up to the next 500. That is what
+  # a full greedy forward selection needs to finish, and it is a property of the space rather
+  # than of a strategy — so random search and, later, the LLM conditions spend the same number
+  # on this task. Re-freeze it if the operator registry or the grid changes; a test fails when
+  # the declared figure no longer covers the space.
+  - id: M3
+    search:
+      strategy: greedy
+      evaluations: 3500
+      max_features: 12
+      seed: 20260910
+    description: >-
+      Non-LLM automated search over the operator registry, forward selection. The baseline
+      H1 actually has to clear: section 9.1 expects it to be strong, and a weak one would
+      make the headline claim unfalsifiable rather than easy.
+
+  - id: M3r
+    search:
+      strategy: random
+      evaluations: 3500
+      max_features: 12
+      seed: 20260910
+    description: >-
+      The same budget spent at random rather than greedily. Reported beside M3 because
+      "random search over a well-designed registry" is the phrase a reviewer will have in
+      mind, and the two are different baselines rather than two names for one.
+
 rationale: >-
   One-hour-ahead temperature is the cheapest honest task on this dataset: the target is
   well behaved, the naive floor is genuinely strong, and the delivery delay that makes USCRN
   interesting shows up directly in how often a feature is null at prediction time. If the
   evaluation pipeline is wrong, it will be wrong here in a way that is easy to see.
+
+  Note what a one-hour horizon means on this dataset. Availability is the close of the
+  dissemination window, so the freshest observation at prediction time t describes t - 1h,
+  and a one-hour-ahead forecast is really two hours out from the last data anyone had. The
+  naive floor is correspondingly weaker than the textbook one — its MASE lands near two
+  rather than near one — and that gap is the phenomenon the dataset was chosen to expose,
+  not an artifact of the task.

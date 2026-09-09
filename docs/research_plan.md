@@ -795,10 +795,18 @@ scoring, emitting a run manifest and a generated table. `vifusion evaluate` runs
 
 **Tasks**
 
-- [ ] Implement M0–M4. *(M0 persistence/seasonal-naive, M1 raw plus calendar, and M2 the
-  expert program are implemented and scored on USCRN. M3 — random or exhaustive search over
-  the operator registry — is the one that matters for H1 and is next. M4 stays optional.)*
-- [ ] Freeze downstream models, tuning ranges, metrics, splits, and budgets.
+- [ ] Implement M0–M4. *(M0 persistence/seasonal-naive, M1 raw plus calendar, M2 the expert
+  program, and M3 the automated search — reported in both greedy and random form at an equal
+  budget — are implemented and scored on USCRN. M4 stays optional: section 9.1 says include
+  an external AutoFE tool only if it integrates in about a day.)*
+- [x] Freeze downstream models, tuning ranges, metrics, splits, and budgets. *(Splits in
+  `configs/splits/`; the candidate grid and the search budget per method in the task
+  configuration, both hashed into the manifest. Primary metric: R-squared, with MASE reported
+  beside it because R-squared measures against the mean and flatters a seasonal series, and
+  with H1's paired test on absolute errors since R-squared cannot be resampled per instance.
+  Tuning: five ridge penalties chosen on validation. Budget: `max_features x |candidates|`
+  rounded up — 3500 for the USCRN task. **LightGBM is still absent**, and section 9.2 needs it
+  as the nonlinear reference before H1 can claim the effect is not model-specific.)*
 - [ ] Reproduce at least one published or competition-quality reference result where feasible.
 - [x] Create a baseline result table directly from tracked output files. *(`vifusion evaluate`
   writes `results.txt`, `scores.json` and a run manifest carrying the raw-data hashes, the

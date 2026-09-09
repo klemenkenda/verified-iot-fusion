@@ -19,7 +19,9 @@ from typing import Any
 import pytest
 import yaml
 
-from vifusion.adapters import splits
+from vifusion.adapters import registry, splits
+from vifusion.adapters.base import DatasetBundle
+from vifusion.adapters.uscrn import DISSEMINATION_WINDOW
 from vifusion.evaluation.tasks import TaskConfig, load_task
 
 STATIONS = ("11111", "22222", "33333")
@@ -56,6 +58,22 @@ DAILY_PATTERN = (
     3.4,
     2.7,
 )
+
+SEARCH_EVALUATIONS = 240
+"""Budget in candidate evaluations, equal for both search strategies.
+
+Small enough for a fast test and large enough that greedy completes more than one forward
+round over the narrowed space below — a budget that cannot finish one round would test the
+fallback path rather than the search."""
+
+SEARCH_SPACE: dict[str, Any] = {
+    "windows": ["3h", "24h"],
+    "lags": ["1h", "24h"],
+    "staleness_bounds": ["24h"],
+    "max_arithmetic_pairs": 6,
+}
+"""A narrowed grid for the fixture. The default grid is the one the real runs use; this keeps
+the candidate space in the dozens so a test finishes in seconds."""
 
 PUBLICATION_DELAY = timedelta(hours=6)
 """Declared lag before a quality-controlled value is published, shortened for the fixture.
@@ -123,7 +141,12 @@ def write_archive(root: Path) -> Path:
             # The final product is the same quantity, quality controlled: a hundredth of a
             # degree different, which is enough to make it a genuinely separate stream.
             final_rows.append(_row(station, moment, round(temperature + 0.01, 3), humidity))
-        name = f"CRNH0203-{moment:%Y%m%d%H}.txt"
+        # The stamp is the window's *close*, so an observation made during hour H is
+        # disseminated in the file that closes at H + 1. Writing it into the file stamped H
+        # would make every record available at the instant it was measured, and this dataset
+        # is in the study precisely because that is not true of it.
+        close = moment + DISSEMINATION_WINDOW
+        name = f"CRN60H0203-{close:%Y%m%d%H%M}.txt"
         (updates / name).write_text("\n".join(rows) + "\n", encoding="utf-8", newline="\n")
 
     final_dir = root / "final"
@@ -174,6 +197,26 @@ def task_document(root: Path, final_name: str) -> dict[str, Any]:
             },
             {"id": "M1", "program": "configs/programs/uscrn_m1_raw_calendar.yaml"},
             {"id": "M2", "program": "configs/programs/uscrn_temperature.yaml"},
+            {
+                "id": "M3",
+                "search": {
+                    "strategy": "greedy",
+                    "evaluations": SEARCH_EVALUATIONS,
+                    "max_features": 4,
+                    "seed": 20260910,
+                    "space": SEARCH_SPACE,
+                },
+            },
+            {
+                "id": "M3r",
+                "search": {
+                    "strategy": "random",
+                    "evaluations": SEARCH_EVALUATIONS,
+                    "max_features": 4,
+                    "seed": 20260910,
+                    "space": SEARCH_SPACE,
+                },
+            },
         ],
     }
 
@@ -223,3 +266,9 @@ def slice_task(slice_repo: Path) -> TaskConfig:
 @pytest.fixture(scope="session")
 def slice_split(slice_repo: Path) -> splits.SplitManifest:
     return splits.load(slice_repo / "configs" / "splits" / "uscrn_fixture.yaml")
+
+
+@pytest.fixture(scope="session")
+def uscrn_search_bundle(slice_repo: Path, slice_task: TaskConfig) -> DatasetBundle:
+    """The bundle a search draws its space from, read exactly as the runner reads it."""
+    return registry.get(slice_task.dataset).read(slice_repo / slice_task.root, slice_task.options)

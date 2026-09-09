@@ -24,7 +24,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -46,6 +46,25 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class SearchSpec(_Strict):
+    """A method whose feature program is searched for rather than written.
+
+    The budget is in **candidate evaluations**, which section 9.4 calls the fairness crux of
+    the whole comparison: random search can produce thousands of candidates for the price of
+    one LLM call, so equalising on calls would hand the LLM a hidden compute advantage. Every
+    searching method — M3 now, M5 to M8 later — spends the same number of evaluations, and
+    reports its LLM calls, tokens and latency separately as the overhead it adds.
+    """
+
+    strategy: Literal["random", "greedy"] = "greedy"
+    evaluations: int
+    max_features: int = 8
+    seed: int = 20260910
+    space: dict[str, Any] = Field(default_factory=dict)
+    """Overrides for the declared candidate grid. Frozen with the budget: a wider grid finds
+    more for the same number of evaluations, so the space is half of what a budget means."""
+
+
 class MethodSpec(_Strict):
     """One row of the M0 to M8 grid, bound to a dataset.
 
@@ -54,12 +73,17 @@ class MethodSpec(_Strict):
     forecast is a one-node program read through an ``identity`` predictor, so even the floor
     obeys the same eligibility rule as everything above it, rather than being computed by a
     separate path that could quietly look at the wrong instant.
+
+    A method either names a written ``program`` or declares a ``search`` that finds one. Both
+    end at the same place: a compiled plan the verifier accepted, replayed through the same
+    clock.
     """
 
     id: str
-    program: str
+    program: str | None = None
     """Path to a feature program, relative to the repository root."""
 
+    search: SearchSpec | None = None
     predictor: str = "ridge"
     output: str | None = None
     """For the ``identity`` predictor: which output node *is* the prediction."""
@@ -67,11 +91,21 @@ class MethodSpec(_Strict):
     description: str = ""
 
     @model_validator(mode="after")
-    def _identity_names_its_output(self) -> Self:
+    def _one_source_of_features(self) -> Self:
+        if bool(self.program) == bool(self.search):
+            raise ValueError(
+                f"method {self.id!r} must declare exactly one of program or search; a method "
+                "with both would report a searched result under a written program's hash"
+            )
         if self.predictor == "identity" and not self.output:
             raise ValueError(
                 f"method {self.id!r} uses the identity predictor but names no output node; "
                 "an identity predictor returns one feature, so it must say which"
+            )
+        if self.search is not None and self.predictor == "identity":
+            raise ValueError(
+                f"method {self.id!r} searches for features but returns one of them unchanged; "
+                "an identity predictor makes the search a contest between single features"
             )
         return self
 

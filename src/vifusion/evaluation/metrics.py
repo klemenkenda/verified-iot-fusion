@@ -1,8 +1,22 @@
 """Forecast metrics of section 9.5.
 
-MAE and RMSE for every regression task, plus MASE so that results are comparable across
-entities and datasets whose targets differ in scale — a station in Colorado and one in Alaska
-produce MAEs that cannot be averaged, which is the failure a macro table makes easy to miss.
+**R-squared is the declared primary metric** (decided 2026-09-10), with MAE, RMSE and MASE
+reported beside it. One caveat travels with that choice and belongs next to the code rather
+than in a footnote: R-squared measures a forecast against the *mean of the scored period*,
+which is a very weak baseline for a series with a daily cycle, so a high R-squared here is
+not evidence that a method is good — MASE, which measures against the naive forecast, is the
+number that says whether a method beat the thing it has to beat.
+
+The second caveat is structural. Section 9.6 requires **paired** comparisons with a
+time-aware block bootstrap, and R-squared has no per-instance decomposition to pair or to
+resample: it is a ratio of two sums over the whole fold. So H1's confirmatory test runs on
+paired absolute errors — see :func:`paired_differences` — and R-squared is what the results
+table leads with. Both are reported; only one can carry an interval.
+
+MAE and RMSE are reported for every regression task, and MASE so that results are comparable
+across entities and datasets whose targets differ in scale — a station in Colorado and one in
+Alaska produce MAEs that cannot be averaged, which is the failure a macro table makes easy to
+miss.
 
 **MASE's denominator is computed on the training period, never the test period.** The scale
 of a naive forecast is a property of the data, and taking it from the period being scored
@@ -40,6 +54,11 @@ class Scores:
     count: int
     mae: float
     rmse: float
+
+    r2: float | None
+    """Primary metric. None when the scored targets do not vary, which makes it undefined
+    rather than zero: every forecast of a constant is equally right."""
+
     mase: float | None
     """Mean absolute error scaled by each entity's own naive-forecast error.
 
@@ -52,6 +71,7 @@ class Scores:
     def as_dict(self) -> dict[str, Any]:
         return {
             "count": self.count,
+            "r2": self.r2,
             "mae": self.mae,
             "rmse": self.rmse,
             "mase": self.mase,
@@ -117,6 +137,11 @@ def score(
     mae = math.fsum(absolute) / len(errors)
     rmse = math.sqrt(math.fsum(error * error for error in errors) / len(errors))
 
+    mean_actual = math.fsum(actual) / len(actual)
+    total = math.fsum((value - mean_actual) ** 2 for value in actual)
+    residual = math.fsum(error * error for error in errors)
+    r2 = None if total == 0.0 else 1.0 - residual / total
+
     mase: float | None = None
     if scales is not None:
         if groups is None or len(groups) != len(errors):
@@ -132,6 +157,7 @@ def score(
         count=len(errors),
         mae=mae,
         rmse=rmse,
+        r2=r2,
         mase=mase,
         bias=math.fsum(errors) / len(errors),
     )
@@ -164,11 +190,14 @@ def render_table(rows: Sequence[tuple[str, Scores]], *, title: str = "") -> str:
     lines = []
     if title:
         lines.append(title)
-    lines.append(f"{'method':<10} {'n':>5} {'MAE':>10} {'RMSE':>10} {'MASE':>8} {'bias':>10}")
+    lines.append(
+        f"{'method':<10} {'n':>5} {'R2':>8} {'MAE':>10} {'RMSE':>10} {'MASE':>8} {'bias':>10}"
+    )
     for name, scores in rows:
         mase = "—" if scores.mase is None else f"{scores.mase:.3f}"
+        r2 = "—" if scores.r2 is None else f"{scores.r2:.4f}"
         lines.append(
-            f"{name:<10} {scores.count:>5} {scores.mae:>10.4f} {scores.rmse:>10.4f} "
+            f"{name:<10} {scores.count:>5} {r2:>8} {scores.mae:>10.4f} {scores.rmse:>10.4f} "
             f"{mase:>8} {scores.bias:>10.4f}"
         )
     return "\n".join(lines)
