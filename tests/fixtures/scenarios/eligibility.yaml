@@ -1,0 +1,210 @@
+# Eligibility and leakage: the rule of section 5.2, `record.available_time <= t`, and the
+# tie at `available_time == t` fixed by section 5.2.1.
+#
+# Timestamps are quoted so YAML cannot strip their timezone. Where `available_time` is
+# omitted it equals `event_time` — an instantly available record.
+family: eligibility
+
+scenarios:
+  - name: eligibility_record_available_exactly_at_prediction_time_is_visible
+    description: >-
+      The tie fixed by section 5.2.1. A record whose availability equals the prediction time
+      IS visible, matching the `<=` of the eligibility rule. This is the single most
+      consequential boundary in the project.
+    records:
+      - id: m1
+        event_time: "2024-01-01T00:00:00Z"
+        available_time: "2024-01-01T00:00:00Z"
+        value: 10.0
+    specs:
+      - name: last_temp
+        op: last_value
+    prediction_time: "2024-01-01T00:00:00Z"
+    expect:
+      eligible: [m1]
+      values:
+        last_temp: 10.0
+      lineage:
+        last_temp: [m1]
+
+  - name: eligibility_record_available_one_second_later_is_invisible
+    description: >-
+      The other side of the same boundary. One second past the prediction time is future
+      information and must not appear.
+    records:
+      - id: m1
+        event_time: "2024-01-01T00:00:00Z"
+        available_time: "2024-01-01T00:00:01Z"
+        value: 10.0
+    specs:
+      - name: last_temp
+        op: last_value
+    prediction_time: "2024-01-01T00:00:00Z"
+    expect:
+      eligible: []
+      values:
+        last_temp: null
+      lineage:
+        last_temp: []
+
+  - name: eligibility_future_arrival_does_not_change_an_earlier_vector
+    description: >-
+      Property 1 of section 10.2 as a named case: a record arriving later cannot alter a
+      feature computed earlier.
+    records:
+      - id: m1
+        event_time: "2024-01-01T00:00:00Z"
+        value: 10.0
+      - id: m2
+        event_time: "2024-01-01T01:00:00Z"
+        value: 20.0
+    specs:
+      - name: last_temp
+        op: last_value
+    prediction_time: "2024-01-01T00:30:00Z"
+    expect:
+      eligible: [m1]
+      values:
+        last_temp: 10.0
+      lineage:
+        last_temp: [m1]
+
+  - name: eligibility_delayed_arrival_is_invisible_before_it_arrives
+    description: >-
+      An observation made at 00:00 but only delivered at 02:00. Substituting event_time for
+      available_time here is the classic leak, and it is what section 5.1 forbids.
+    records:
+      - id: m1
+        event_time: "2024-01-01T00:00:00Z"
+        available_time: "2024-01-01T02:00:00Z"
+        value: 10.0
+    specs:
+      - name: last_temp
+        op: last_value
+    prediction_time: "2024-01-01T01:00:00Z"
+    expect:
+      eligible: []
+      values:
+        last_temp: null
+      lineage:
+        last_temp: []
+
+  - name: eligibility_delayed_arrival_is_visible_once_it_arrives
+    description: >-
+      The same record an hour later. It is now eligible, and its staleness is measured from
+      the event time, not from the arrival time — two hours, not zero.
+    records:
+      - id: m1
+        event_time: "2024-01-01T00:00:00Z"
+        available_time: "2024-01-01T02:00:00Z"
+        value: 10.0
+    specs:
+      - name: last_temp
+        op: last_value
+      - name: temp_staleness
+        op: staleness
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      eligible: [m1]
+      values:
+        last_temp: 10.0
+        temp_staleness: 7200.0
+      lineage:
+        last_temp: [m1]
+        temp_staleness: [m1]
+
+  - name: eligibility_duplicate_records_resolve_by_a_total_order
+    description: >-
+      Two records for the same stream and the same event time, equally available. The choice
+      must not depend on list order, so the selection key ends with the record id and the
+      lexicographically greatest one wins. What matters is determinism, not which one.
+    records:
+      - id: dup_a
+        event_time: "2024-01-01T00:00:00Z"
+        value: 10.0
+      - id: dup_b
+        event_time: "2024-01-01T00:00:00Z"
+        value: 20.0
+    specs:
+      - name: last_temp
+        op: last_value
+    prediction_time: "2024-01-01T00:00:00Z"
+    expect:
+      eligible: [dup_a, dup_b]
+      values:
+        last_temp: 20.0
+      lineage:
+        last_temp: [dup_b]
+
+  - name: eligibility_ingestion_order_does_not_change_the_result
+    description: >-
+      The same two observations as the future-arrival case, listed newest first. Replay is
+      ordered by availability, so the order they appear in the log is irrelevant.
+    records:
+      - id: m2
+        event_time: "2024-01-01T01:00:00Z"
+        value: 20.0
+      - id: m1
+        event_time: "2024-01-01T00:00:00Z"
+        value: 10.0
+    specs:
+      - name: last_temp
+        op: last_value
+    prediction_time: "2024-01-01T00:30:00Z"
+    expect:
+      eligible: [m1]
+      values:
+        last_temp: 10.0
+      lineage:
+        last_temp: [m1]
+
+  - name: eligibility_other_streams_do_not_contribute
+    description: >-
+      A record from a different source with the same feature name must not leak into this
+      stream. Streams are keyed by entity, source, and feature name together.
+    records:
+      - id: mine
+        source: s1
+        event_time: "2024-01-01T00:00:00Z"
+        value: 10.0
+      - id: theirs
+        source: s2
+        event_time: "2024-01-01T00:30:00Z"
+        value: 99.0
+    specs:
+      - name: last_temp
+        op: last_value
+        source: s1
+    prediction_time: "2024-01-01T01:00:00Z"
+    expect:
+      eligible: [mine, theirs]
+      values:
+        last_temp: 10.0
+      lineage:
+        last_temp: [mine]
+
+  - name: eligibility_other_entities_do_not_contribute
+    description: >-
+      Feature programs are written once and instantiated per entity (section 5.3). A
+      sibling entity's stream is reachable only through a declared entity graph, never
+      implicitly.
+    records:
+      - id: e1_obs
+        entity: e1
+        event_time: "2024-01-01T00:00:00Z"
+        value: 10.0
+      - id: e2_obs
+        entity: e2
+        event_time: "2024-01-01T00:30:00Z"
+        value: 99.0
+    specs:
+      - name: last_temp
+        op: last_value
+        entity: e1
+    prediction_time: "2024-01-01T01:00:00Z"
+    expect:
+      eligible: [e1_obs, e2_obs]
+      values:
+        last_temp: 10.0
+      lineage:
+        last_temp: [e1_obs]

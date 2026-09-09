@@ -1,0 +1,242 @@
+# Last-known value with a staleness bound, exact lag by event time, staleness, and
+# missing counts. These are the operators that describe the *shape* of the data rather than
+# its values, and they are where a leak is hardest to see by reading a feature table.
+family: staleness_and_gaps
+
+scenarios:
+  - name: staleness_is_measured_from_the_event_not_the_arrival
+    description: >-
+      An observation of 00:00 delivered at 00:30, read at 01:00. Staleness is one hour — the
+      age of the information — not the thirty minutes since it arrived.
+    records:
+      - id: m1
+        event_time: "2024-01-01T00:00:00Z"
+        available_time: "2024-01-01T00:30:00Z"
+        value: 10.0
+    specs:
+      - name: age
+        op: staleness
+    prediction_time: "2024-01-01T01:00:00Z"
+    expect:
+      values:
+        age: 3600.0
+      lineage:
+        age: [m1]
+
+  - name: staleness_is_null_when_nothing_is_eligible
+    description: No eligible observation means the age is unknown, not zero.
+    records:
+      - id: m1
+        event_time: "2024-01-01T00:00:00Z"
+        available_time: "2024-01-01T05:00:00Z"
+        value: 10.0
+    specs:
+      - name: age
+        op: staleness
+    prediction_time: "2024-01-01T01:00:00Z"
+    expect:
+      eligible: []
+      values:
+        age: null
+      lineage:
+        age: []
+
+  - name: last_value_beyond_the_staleness_bound_is_null
+    description: >-
+      A two-hour-old reading under a one-hour freshness bound. The value is dropped rather
+      than served stale, and the lineage is empty because no record contributed a value.
+    records:
+      - id: m1
+        event_time: "2024-01-01T00:00:00Z"
+        value: 10.0
+    specs:
+      - name: fresh_temp
+        op: last_value
+        max_staleness: 1h
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      eligible: [m1]
+      values:
+        fresh_temp: null
+      lineage:
+        fresh_temp: []
+
+  - name: last_value_exactly_at_the_staleness_bound_is_kept
+    description: >-
+      Age equal to the bound is within it. The comparison is strictly greater-than, matching
+      the inclusive convention used for availability.
+    records:
+      - id: m1
+        event_time: "2024-01-01T00:00:00Z"
+        value: 10.0
+    specs:
+      - name: fresh_temp
+        op: last_value
+        max_staleness: 1h
+    prediction_time: "2024-01-01T01:00:00Z"
+    expect:
+      values:
+        fresh_temp: 10.0
+      lineage:
+        fresh_temp: [m1]
+
+  - name: last_value_skips_a_null_valued_newer_record
+    description: >-
+      The newest record carries a recorded missing value, so the last *known* value is the
+      older one. A null is not a value.
+    records:
+      - id: m1
+        event_time: "2024-01-01T00:00:00Z"
+        value: 10.0
+      - id: m_null
+        event_time: "2024-01-01T00:30:00Z"
+        value: null
+    specs:
+      - name: last_temp
+        op: last_value
+      - name: age
+        op: staleness
+    prediction_time: "2024-01-01T01:00:00Z"
+    expect:
+      eligible: [m1, m_null]
+      values:
+        last_temp: 10.0
+        age: 3600.0
+      lineage:
+        last_temp: [m1]
+        age: [m1]
+
+  - name: lag_matches_the_event_time_exactly
+    description: Exact lag by event time, per section 5.3. Two hours back from 02:00 is 00:00.
+    records:
+      - id: m0
+        event_time: "2024-01-01T00:00:00Z"
+        value: 1.0
+      - id: m1
+        event_time: "2024-01-01T01:00:00Z"
+        value: 2.0
+    specs:
+      - name: temp_lag_2h
+        op: lag
+        lag: 2h
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      values:
+        temp_lag_2h: 1.0
+      lineage:
+        temp_lag_2h: [m0]
+
+  - name: lag_without_an_exact_match_is_null
+    description: >-
+      No record sits at 00:30. There is deliberately no nearest-neighbour fallback: an
+      approximate match would make the operator's meaning depend on the sampling grid.
+    records:
+      - id: m0
+        event_time: "2024-01-01T00:00:00Z"
+        value: 1.0
+      - id: m1
+        event_time: "2024-01-01T01:00:00Z"
+        value: 2.0
+    specs:
+      - name: temp_lag_90m
+        op: lag
+        lag: 90m
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      values:
+        temp_lag_90m: null
+      lineage:
+        temp_lag_90m: []
+
+  - name: lag_does_not_reach_an_unavailable_record
+    description: >-
+      The record at the exact lag exists but has not arrived. Eligibility is checked before
+      the event-time match, never after.
+    records:
+      - id: m0
+        event_time: "2024-01-01T00:00:00Z"
+        available_time: "2024-01-01T09:00:00Z"
+        value: 1.0
+    specs:
+      - name: temp_lag_2h
+        op: lag
+        lag: 2h
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      eligible: []
+      values:
+        temp_lag_2h: null
+      lineage:
+        temp_lag_2h: []
+
+  - name: missing_count_reports_absent_slots
+    description: >-
+      A four-hour window at an hourly cadence expects four observations; two arrived, so two
+      are missing.
+    records:
+      - id: m1
+        event_time: "2024-01-01T01:00:00Z"
+        value: 1.0
+      - id: m2
+        event_time: "2024-01-01T03:00:00Z"
+        value: 2.0
+    specs:
+      - name: gaps_4h
+        op: missing_count
+        window: 4h
+        expected_interval: 1h
+    prediction_time: "2024-01-01T04:00:00Z"
+    expect:
+      values:
+        gaps_4h: 2.0
+      lineage:
+        gaps_4h: [m1, m2]
+
+  - name: missing_count_treats_a_null_valued_record_as_missing
+    description: >-
+      The record arrived but carried no usable value, so the observation is still missing.
+      Its id remains in the lineage because its presence is what the count depends on.
+    records:
+      - id: m_null
+        event_time: "2024-01-01T01:00:00Z"
+        value: null
+      - id: m2
+        event_time: "2024-01-01T02:00:00Z"
+        value: 5.0
+    specs:
+      - name: gaps_2h
+        op: missing_count
+        window: 2h
+        expected_interval: 1h
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      values:
+        gaps_2h: 1.0
+      lineage:
+        gaps_2h: [m_null, m2]
+
+  - name: missing_count_is_never_negative
+    description: >-
+      A burst delivering more observations than the nominal cadence expects yields zero
+      missing, not a negative count.
+    records:
+      - id: m1
+        event_time: "2024-01-01T01:10:00Z"
+        value: 1.0
+      - id: m2
+        event_time: "2024-01-01T01:20:00Z"
+        value: 2.0
+      - id: m3
+        event_time: "2024-01-01T01:30:00Z"
+        value: 3.0
+    specs:
+      - name: gaps_1h
+        op: missing_count
+        window: 1h
+        expected_interval: 1h
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      values:
+        gaps_1h: 0.0
+      lineage:
+        gaps_1h: [m1, m2, m3]

@@ -1,0 +1,251 @@
+# Trailing-window aggregates over the half-open window `(t - window, t]` declared in
+# vifusion.temporal.boundaries. Aggregates are exact: no sketches (section 5.3).
+family: windows
+
+scenarios:
+  - name: window_left_edge_is_exclusive
+    description: >-
+      A record landing exactly on `t - window` falls outside. This is what lets consecutive
+      windows tile time without counting a boundary observation twice.
+    records:
+      - id: m0
+        event_time: "2024-01-01T00:00:00Z"
+        value: 1.0
+      - id: m1
+        event_time: "2024-01-01T01:00:00Z"
+        value: 2.0
+      - id: m2
+        event_time: "2024-01-01T02:00:00Z"
+        value: 3.0
+    specs:
+      - name: n_2h
+        op: window
+        window: 2h
+        aggregate: count
+      - name: sum_2h
+        op: window
+        window: 2h
+        aggregate: sum
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      eligible: [m0, m1, m2]
+      values:
+        n_2h: 2.0
+        sum_2h: 5.0
+      lineage:
+        n_2h: [m1, m2]
+        sum_2h: [m1, m2]
+
+  - name: window_right_edge_is_inclusive
+    description: >-
+      A record landing exactly on the prediction time is inside the window, consistent with
+      the inclusive availability boundary.
+    records:
+      - id: m1
+        event_time: "2024-01-01T01:00:00Z"
+        value: 2.0
+      - id: m2
+        event_time: "2024-01-01T02:00:00Z"
+        value: 3.0
+    specs:
+      - name: n_1h
+        op: window
+        window: 1h
+        aggregate: count
+      - name: mean_1h
+        op: window
+        window: 1h
+        aggregate: mean
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      values:
+        n_1h: 1.0
+        mean_1h: 3.0
+      lineage:
+        n_1h: [m2]
+        mean_1h: [m2]
+
+  - name: window_excludes_ineligible_records_inside_the_event_range
+    description: >-
+      The leak this whole design exists to prevent. m_late occurred inside the window but is
+      not yet available; an implementation that windows on event time alone would include it.
+    records:
+      - id: m_early
+        event_time: "2024-01-01T00:30:00Z"
+        value: 1.0
+      - id: m_late
+        event_time: "2024-01-01T01:00:00Z"
+        available_time: "2024-01-01T03:00:00Z"
+        value: 100.0
+      - id: m_now
+        event_time: "2024-01-01T02:00:00Z"
+        value: 3.0
+    specs:
+      - name: n_3h
+        op: window
+        window: 3h
+        aggregate: count
+      - name: mean_3h
+        op: window
+        window: 3h
+        aggregate: mean
+    prediction_time: "2024-01-01T02:00:00Z"
+    expect:
+      eligible: [m_early, m_now]
+      values:
+        n_3h: 2.0
+        mean_3h: 2.0
+      lineage:
+        n_3h: [m_early, m_now]
+        mean_3h: [m_early, m_now]
+
+  - name: window_empty_yields_zero_count_and_null_aggregates
+    description: >-
+      An empty window is not an error and not a zero. Count is zero because zero
+      observations is a fact; the mean of nothing is undefined and must be null rather than
+      silently zero, which a downstream model would read as a real measurement.
+    records:
+      - id: m_old
+        event_time: "2024-01-01T00:00:00Z"
+        value: 1.0
+    specs:
+      - name: n_1h
+        op: window
+        window: 1h
+        aggregate: count
+      - name: mean_1h
+        op: window
+        window: 1h
+        aggregate: mean
+      - name: sum_1h
+        op: window
+        window: 1h
+        aggregate: sum
+      - name: min_1h
+        op: window
+        window: 1h
+        aggregate: min
+    prediction_time: "2024-01-01T05:00:00Z"
+    expect:
+      eligible: [m_old]
+      values:
+        n_1h: 0.0
+        mean_1h: null
+        sum_1h: null
+        min_1h: null
+      lineage:
+        n_1h: []
+        mean_1h: []
+        sum_1h: []
+        min_1h: []
+
+  - name: window_variance_is_the_sample_variance
+    description: >-
+      Values 2, 4, 6 have mean 4, squared deviations 4 + 0 + 4 = 8, and sample variance
+      8 / (3 - 1) = 4. The denominator is a declared choice, identical in both
+      implementations.
+    records:
+      - id: m1
+        event_time: "2024-01-01T00:15:00Z"
+        value: 2.0
+      - id: m2
+        event_time: "2024-01-01T00:30:00Z"
+        value: 4.0
+      - id: m3
+        event_time: "2024-01-01T00:45:00Z"
+        value: 6.0
+    specs:
+      - name: var_1h
+        op: window
+        window: 1h
+        aggregate: variance
+      - name: sd_1h
+        op: window
+        window: 1h
+        aggregate: stddev
+      - name: mean_1h
+        op: window
+        window: 1h
+        aggregate: mean
+      - name: min_1h
+        op: window
+        window: 1h
+        aggregate: min
+      - name: max_1h
+        op: window
+        window: 1h
+        aggregate: max
+      - name: sum_1h
+        op: window
+        window: 1h
+        aggregate: sum
+    prediction_time: "2024-01-01T01:00:00Z"
+    expect:
+      values:
+        var_1h: 4.0
+        sd_1h: 2.0
+        mean_1h: 4.0
+        min_1h: 2.0
+        max_1h: 6.0
+        sum_1h: 12.0
+      lineage:
+        var_1h: [m1, m2, m3]
+        sd_1h: [m1, m2, m3]
+
+  - name: window_variance_of_a_single_observation_is_null
+    description: >-
+      Sample variance needs two observations. Returning zero would claim the stream is
+      perfectly stable on the evidence of one reading.
+    records:
+      - id: m1
+        event_time: "2024-01-01T00:30:00Z"
+        value: 2.0
+    specs:
+      - name: n_1h
+        op: window
+        window: 1h
+        aggregate: count
+      - name: var_1h
+        op: window
+        window: 1h
+        aggregate: variance
+    prediction_time: "2024-01-01T01:00:00Z"
+    expect:
+      values:
+        n_1h: 1.0
+        var_1h: null
+      lineage:
+        var_1h: []
+
+  - name: window_null_valued_records_are_excluded_from_aggregates
+    description: >-
+      A record present with a null value is a recorded missing observation. It is not
+      counted and does not enter the mean; it is what the missing-count operator reports.
+    records:
+      - id: m1
+        event_time: "2024-01-01T00:15:00Z"
+        value: 2.0
+      - id: m_null
+        event_time: "2024-01-01T00:30:00Z"
+        value: null
+      - id: m3
+        event_time: "2024-01-01T00:45:00Z"
+        value: 6.0
+    specs:
+      - name: n_1h
+        op: window
+        window: 1h
+        aggregate: count
+      - name: mean_1h
+        op: window
+        window: 1h
+        aggregate: mean
+    prediction_time: "2024-01-01T01:00:00Z"
+    expect:
+      eligible: [m1, m_null, m3]
+      values:
+        n_1h: 2.0
+        mean_1h: 4.0
+      lineage:
+        n_1h: [m1, m3]
+        mean_1h: [m1, m3]
