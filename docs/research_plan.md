@@ -6,6 +6,10 @@
 **Starting point:** [Streaming Data Fusion for the Internet of Things](https://doi.org/10.3390/s19081955) and the [iot-fusion repository](https://github.com/klemenkenda/iot-fusion)  
 **Original repository revision inspected while preparing this plan:** [`708053a`](https://github.com/klemenkenda/iot-fusion/commit/708053a4960d5a52a18e3178c35eb812ad979376)
 
+**Revision r2 (9 September 2026):** streaming execution made normative and leakage prevented by construction; batch/stream parity redefined as a tolerance-based equivalence; state bounds tied to declared source rates; DSL fixed as a JSON dataflow graph; feedback payload frozen as an experimental parameter; candidate evaluations adopted as the budget-equalisation axis; main model grid reduced to two predictors; USCRN promoted ahead of Enefit in build order; original-system parity reduced to a documented spot-check; evidence map added as section 13.
+
+**Revision r3 (9 September 2026):** roadmap re-estimated for LLM-assisted implementation. Durations are now effort-weeks with an explicit calendar translation; the critical path falls from 31 to about 20 effort-weeks, with 24 recommended after buffer. See section 11.0 for what compresses, what does not, and the review cost that partially offsets the gains.
+
 ## 1. Purpose of this document
 
 This document is the implementation and research roadmap for a successor to `iot-fusion`. It is written so that a human researcher and an LLM coding assistant can work through it from a minimal prototype to a reproducible paper submission.
@@ -35,7 +39,7 @@ The paper should claim only what the experiments establish. In particular, do no
 The intended contribution is the combination of:
 
 1. **Availability-aware temporal semantics.** Records distinguish the time an observation describes from the time it becomes usable. Forecasts additionally distinguish issue time, valid time, and revision or model run.
-2. **Verified feature-pipeline synthesis.** The LLM emits a restricted feature DSL. A deterministic compiler proves or rejects temporal eligibility, type and unit validity, bounded state, and operator support before execution.
+2. **Correctness by construction, then by verification.** The LLM emits a restricted feature DSL. Streaming execution is the normative semantics: operators read only from window buffers released by a replay clock ordered on `available_time`, so an ineligible dependency is not merely rejected but unrepresentable. A deterministic compiler additionally proves or rejects type and unit validity, bounded state, operator support, and — for the vectorised batch path, where leakage actually originates — equivalence to the streaming reference before execution.
 3. **Streaming validation feedback.** Candidate features are evaluated using chronological replay and delayed labels, and structured results are returned to the proposal process.
 4. **Evaluation under recorded availability.** At least two experiments use real release or dissemination information rather than only artificial delays.
 
@@ -60,9 +64,13 @@ Do verified LLM-proposed streaming features improve chronological forecasting pe
 
 ### RQ2 — Temporal correctness
 
-Does the verifier prevent features from using observations, labels, or forecast revisions that were unavailable at prediction time?
+Does the execution model prevent features from using observations, labels, or forecast revisions that were unavailable at prediction time, and does the compiler reject the batch-path programs that could violate this?
 
-**H2:** The verifier rejects all generated leakage cases in a preregistered synthetic test suite and produces zero eligibility violations during deterministic replay.
+**H2a (construction):** Under streaming reference execution, no preregistered synthetic leakage scenario can produce an ineligible dependency, and deterministic replay yields zero runtime lineage violations.
+
+**H2b (verification):** The compiler rejects every preregistered leaking batch program with a stable diagnostic code, at a false-rejection rate reported over a matched set of valid programs.
+
+Splitting H2 matters for the paper. H2a is an architectural claim evidenced by property tests and oracle agreement; H2b is a checker claim evidenced by a confusion matrix with a false-rejection axis. Reporting them as one number would obscure that the strongest correctness guarantee comes from the execution model rather than from static analysis.
 
 ### RQ3 — Value of semantic context
 
@@ -163,20 +171,33 @@ For a revised forecast, select the latest eligible issue or revision whose valid
 
 Every computed feature must carry lineage containing all source record identifiers and their maximum `available_time`. A feature is eligible only when its complete dependency closure is eligible.
 
+### 5.2.1 Replay as a three-event queue
+
+Eligibility is enforced once by the replay loop rather than re-derived by every operator. Replay is a single priority queue ordered on `available_time` carrying three event kinds:
+
+1. **record arrival** — a canonical record becomes visible to operator state;
+2. **prediction request** — a feature vector is requested at `prediction_time`;
+3. **label reveal** — a target becomes usable for learning or scoring at `label_available_time`.
+
+Operators read only from buffers this loop has already released, so an operator cannot address a record the clock has not delivered. That is the mechanism behind H2a, and it is why the engine is small: the whole loop is on the order of two hundred lines.
+
+Ties between a record arrival and a prediction request at the same timestamp are the boundary case behind most temporal defects. Fix the rule once: a record with `available_time == t` **is** visible to a request at `t`, matching the `<=` above. Encode it as a single named constant in the temporal package and forbid every other module from re-deciding inclusivity. Window boundaries, forecast selectors, and label gates must all reference that constant rather than restate it.
+
 ### 5.3 Feature DSL
 
 The first implementation should support a deliberately small, typed set of operators:
 
 - current or last-known value with a maximum staleness bound;
 - exact lag by event time;
-- trailing count, mean, variance, standard deviation, minimum, maximum, sum, and quantile;
+- trailing count, mean, variance, standard deviation, minimum, maximum, sum, and exact quantile over the retained window buffer;
 - slope and difference over a trailing window;
 - missing-count, time-since-last-observation, and staleness indicators;
 - calendar features known at prediction time;
 - categorical equality and membership;
 - arithmetic combinations with unit checking;
 - forecast value selected by issue time, valid time, lead time, and revision policy;
-- cross-source difference, ratio, and interaction after temporal alignment.
+- cross-source difference, ratio, and interaction after temporal alignment;
+- cross-entity selection over a declared entity graph, for example the `k` nearest stations or sibling meters, subject to the same eligibility rule as any other source.
 
 Each operator declares:
 
@@ -187,31 +208,45 @@ unit_rule: preserve | multiply | divide | dimensionless | custom
 time_direction: past_only | known_future | static
 lookback: duration
 maximum_staleness: duration | null
-state_bound: integer
+state_bound: derived        # from lookback and the source's declared max_input_rate
 null_policy: reject | propagate | impute_constant | last_value
 ```
 
 The first paper should avoid arbitrary user-defined functions. New operators should be added to the registry only with semantics, reference implementation, unit tests, property tests, and state bounds.
 
+Three constraints on the registry follow from the correctness argument and should not be relaxed for convenience:
+
+- **No approximate sketches.** Streaming quantile estimators such as t-digest or P-square cannot reproduce a batch quantile exactly, which would make batch/stream parity untestable as an equality. Because every window is bounded by declared lookback, the raw window can be retained and the quantile computed exactly. Accept the memory cost: it removes an entire class of parity failures, and a caveat paragraph from the paper.
+- **State bounds are not statically computable from lookback alone.** State is a function of lookback *and* arrival rate, and arrival rate is data-dependent — a bursty source makes a one-hour window unbounded. Every source schema must therefore declare `max_input_rate` or an explicit `max_records_in_window`; the compiler derives `state_bound` from it, and the runtime **raises** on exceeding the bound. It must never silently evict, because silent eviction produces wrong features that pass every correctness test in section 10.
+- **Cross-entity addressing is explicit.** Feature programs are written once and instantiated per entity. Any reference to another entity's stream resolves through an entity graph declared in configuration — spatial neighbours, site groupings, sibling meters — never through an implicit join. The graph must itself be static or available at prediction time.
+
+**Representation.** The DSL is a JSON dataflow graph, a list of `{id, op, inputs, params}` nodes, not an infix expression language. This is a deliberate choice with three consequences: schema-constrained decoding makes well-formed LLM output cheap; validation is Pydantic plus a topological check rather than a hand-written parser; and every diagnostic is addressable as `(node_id, code, message)`, which is what makes the repair loop of section 7 mechanical rather than conversational.
+
 ### 5.4 Static analysis and compilation
+
+Streaming execution is the normative semantics. The vectorised batch path exists only as an optimisation and is admissible only where it is provably equivalent. This inversion is the central architectural decision of the project: temporal leakage originates almost entirely in batch code, where a grouped aggregation can silently span the future, so static analysis is aimed at the batch path rather than treated as the primary defence everywhere.
 
 The compiler should perform these stages:
 
-1. Parse and schema-validate the LLM response.
-2. Resolve sources, fields, units, and task horizon.
-3. Construct a feature dependency graph.
+1. Parse and schema-validate the LLM response against the versioned DSL schema.
+2. Resolve sources, fields, units, entity-graph references, and task horizon.
+3. Construct the feature dependency graph; reject cycles and unknown operators.
 4. Type-check and unit-check every node.
-5. Perform availability and future-information analysis.
-6. Calculate maximum lookback and state requirements.
-7. Reject cycles, unknown operators, unbounded windows, and invalid joins.
-8. Compile accepted nodes into the runtime execution graph.
+5. Derive maximum lookback and state requirements from declared source rates; reject unbounded windows and invalid joins.
+6. Emit the streaming execution plan.
+7. Emit a batch execution plan only for nodes whose batch lowering is registered as equivalent to their streaming accumulator; fall back to streaming for the rest.
+8. Perform future-information analysis on the batch plan and reject any node whose lowering could read beyond the prediction boundary.
 9. Generate a human-readable feature card and machine-readable lineage record.
+
+Every rejection carries a stable diagnostic code and the offending `node_id`. These codes are part of the frozen protocol, not an implementation detail: they are simultaneously the feedback channel to the LLM, the rows of the H2b confusion matrix, and a column in the paper's rejection-breakdown figure. They cannot be renamed casually after the pilot.
 
 The compiler result must be one of `accepted`, `rejected`, or `execution_failed`; never silently repair a candidate. A separate, logged repair request may ask the LLM to produce a new candidate.
 
 ## 6. Proposed software architecture
 
 Use Python for the research implementation. Keep the original JavaScript system as a behavioral reference rather than rewriting it in place.
+
+Settle the name before the first commit. The working directory is `iot-fusion2`, this section proposes the repository `verified-iot-fusion` and the package `vifusion`, and the manuscript, the Zenodo archive, and `CITATION.cff` must all agree with whichever is chosen.
 
 Recommended project structure:
 
@@ -253,7 +288,7 @@ Suggested implementation tools:
 - validation and serialization: [`Pydantic`](https://docs.pydantic.dev/latest/);
 - columnar transformations: [`Polars`](https://docs.pola.rs/);
 - local analytical storage and replay queries: [`DuckDB`](https://duckdb.org/docs/stable/);
-- physical units: [`Pint`](https://pint.readthedocs.io/en/stable/);
+- physical units: [`Pint`](https://pint.readthedocs.io/en/stable/), used at **compile time only** — dimensional analysis annotates graph nodes, and execution then runs on raw floats. Pint quantities inside the hot loop would dominate exactly the latency and throughput numbers that RQ4 reports;
 - tests: [`pytest`](https://docs.pytest.org/en/stable/) and [`Hypothesis`](https://hypothesis.readthedocs.io/en/latest/);
 - incremental models and delayed validation: [`River`](https://riverml.xyz/latest/);
 - strong tabular forecasting baseline: [`LightGBM`](https://lightgbm.readthedocs.io/en/stable/);
@@ -312,7 +347,17 @@ It should not receive:
 - hidden baseline results not assigned to that experimental condition;
 - arbitrary code-execution tools.
 
+**Feedback content is a frozen experimental parameter, not an implementation detail.** Returning only a scalar score for a whole feature set gives the proposer almost no signal, and the gap between weak and strong feedback can plausibly exceed the gap between M7 and M8 — which would make the headline ablation a measurement of prompt engineering. The payload must therefore be specified exactly and frozen at Gate C. The default payload is:
+
+- per-feature attribution on the validation split — permutation importance, or gain for the tree model — not only the aggregate metric;
+- compiler diagnostics for every rejected node, as `(node_id, code, message)`;
+- accepted/rejected status and measured cost for every previously proposed candidate.
+
+Version the payload alongside the prompt. If the payload changes, that is a new experimental condition, not a bug fix.
+
 Require JSON output conforming to a versioned schema. Store the exact prompt, model identifier, model settings, response, parse result, verifier diagnostics, token counts, latency, and estimated cost for every call. Remove credentials and personal information before archiving.
+
+**Prompt injection is structurally contained.** Dataset metadata — column descriptions taken from Kaggle, UCI, or NOAA documentation — is untrusted text that enters the prompt. The mitigation is not filtering but the output contract: the model emits only schema-conforming DSL, every operator and source name resolves against a whitelist, and no generated string reaches an interpreter. The worst achievable outcome of an injected instruction is a bad feature, which the evaluator then scores and discards. State this in the paper: the verifier built for temporal correctness also bounds the blast radius of untrusted metadata.
 
 ### 7.3 LLM reproducibility
 
@@ -331,7 +376,7 @@ Require JSON output conforming to a versioned schema. Store the exact prompt, mo
 
 **Source:** [Enefit — Predict Energy Behavior of Prosumers](https://www.kaggle.com/competitions/predict-energy-behavior-of-prosumers/data)  
 **Use:** primary predictive-utility and heterogeneous-fusion experiment.  
-**License shown by the host:** CC BY-NC-SA 4.0; verify the current terms before redistribution.
+**License shown by the host:** CC BY-NC-SA 4.0; verify the current terms before redistribution. Resolve the non-commercial clause against the intended artifact release and institutional policy in Phase 0, not in Phase 11 — it constrains what the archived Zenodo release may contain.
 
 Important fields include `origin_datetime`, `forecast_datetime`, `hours_ahead`, and `data_block_id`. The data combines consumption and production targets, archived weather forecasts, historical weather, electricity and gas prices, installed capacity, and client metadata. `data_block_id` represents information delivered together at a forecast time and enables availability-aware replay.
 
@@ -355,7 +400,7 @@ Candidate tasks:
 
 - one-, three-, and six-hour station temperature forecasting;
 - solar-radiation forecasting;
-- prediction from the local station plus nearby stations and other variables;
+- prediction from the local station plus nearby stations and other variables, addressed through the declared entity graph of section 5.3 rather than an implicit join;
 - late-record robustness and incomplete-source policies.
 
 Use final quality-controlled products only as targets or for clearly separated retrospective comparisons. Do not leak later corrections into replay inputs.
@@ -395,6 +440,8 @@ The submission-quality paper should contain:
 3. Beijing for independent-domain and unseen-station generalization;
 4. a synthetic oracle suite for exhaustive correctness tests.
 
+This list is the evidential ordering for the manuscript. The implementation order differs: USCRN is built first, because its availability must be reconstructed rather than read off a delivered identifier, so it exercises more of the adapter machinery. See Phase 5.
+
 Add HRRR forecast revisions if time permits. Add Intel or Building Data Genome only when needed for a specific scalability or transfer claim.
 
 ## 9. Experimental design
@@ -409,22 +456,29 @@ Use the same allowed operator registry, downstream predictors, training windows,
 | M1 | Raw/current values plus calendar features | Minimal deterministic baseline |
 | M2 | Manually configured features modeled after `iot-fusion` | Expert-engineered reference |
 | M3 | Exhaustive or random operator search | Non-LLM automated baseline |
-| M4 | Established automated feature method where compatible | External AutoFE reference |
+| M4 | Established automated feature method where compatible | External AutoFE reference — **optional**; include only if it integrates in about a day. Cross-tool budget equalisation is a known swamp, and an unfair external baseline is worse than none |
 | M5 | LLM proposals without semantic descriptions | Schema-blind ablation |
 | M6 | LLM proposals with semantics but without temporal verifier | Measures invalidity and leakage risk; execute only candidates proven safe by an independent audit |
 | M7 | LLM proposals plus verifier, no validation feedback | Verification-only ablation |
 | M8 | Full LLM proposal, verifier, and validation feedback loop | Proposed method |
 
+Expect M3 to be strong. Random search over a well-designed operator registry is competitive with learned feature generation across the AutoFE literature, and a reviewer will assume this. Treat H1 as a genuine test rather than a formality: if M8 cannot beat M3 under equalised candidate evaluations, that is a result to report, and Gate D already provides the alternative paper.
+
 M6 must never be allowed to contaminate official results with future information. Report invalid candidates and, for predictive comparison, use only the independently audited safe subset. A deliberately leaky score may appear only in a clearly marked diagnostic figure illustrating why naive evaluation is misleading.
 
 ### 9.2 Downstream models
 
-Use a small, fixed model set:
+Use a small, fixed model set. The main comparison grid uses two predictors only:
 
-- linear or ridge regression;
-- LightGBM with a frozen tuning budget;
-- one River incremental regressor for delayed progressive evaluation;
-- optional time-series foundation model as a secondary modern comparator, not as the main baseline.
+- ridge regression, as the linear reference;
+- LightGBM with a frozen tuning budget, as the nonlinear reference.
+
+Two further models sit outside the main grid:
+
+- one River incremental regressor, used to demonstrate delayed progressive validation and batch/stream parity on a single dataset, not as a cell in the M0–M8 comparison;
+- optionally a time-series foundation model as a secondary modern comparator, never as the main baseline.
+
+This is a deliberate reduction. The grid implied by section 9 — methods by datasets by tasks by seeds by models — runs to several hundred feature searches for one researcher, and predictor count is the cheapest axis to cut without weakening a hypothesis. H1 needs one linear and one nonlinear predictor to show the effect is not model-specific; a third predictor adds cost, not evidence.
 
 Feature generation must not receive model-specific test feedback. Report whether generated features help simple and nonlinear predictors.
 
@@ -454,7 +508,7 @@ Before official runs, freeze:
 - non-LLM search budget;
 - downstream-model hyperparameter budget.
 
-Report both total proposed candidates and accepted/evaluated candidates. Equalize candidate evaluation rather than only wall time when API latency differs.
+**Equalise on candidate evaluations.** This is the fairness crux of the entire comparison and the first thing a reviewer will attack. Random or exhaustive search can generate thousands of candidates for the cost of one LLM call, so equalising on *LLM calls* hands M8 a large hidden compute advantage, while equalising on wall time rewards whichever method happens to have lower API latency. Fix the number of candidate evaluations — the expensive, method-independent axis — across all searching methods, and report LLM calls, tokens, generation latency, and monetary cost separately as the *overhead* the method adds. Report both total proposed candidates and accepted/evaluated candidates.
 
 ### 9.5 Metrics
 
@@ -507,14 +561,24 @@ Use [Hypothesis](https://hypothesis.readthedocs.io/en/latest/) to generate event
 1. Adding a future-unavailable record cannot change an earlier feature vector.
 2. Replay prefix consistency: processing the first `n` arrivals alone equals the prefix of a longer replay.
 3. Reordering records without changing `available_time` ordering follows the declared tie policy and remains deterministic.
-4. Batch and streaming execution produce identical feature values and lineage under the same availability history.
+4. Batch and streaming execution produce identical lineage and numerically equivalent feature values under the same availability history, in the sense defined below.
 5. Memory stays within the compiler's declared state bound after warm-up.
 6. Unit-preserving operations return the declared unit.
 7. Feature lineage contains every actual raw dependency.
 
+**Parity is an equivalence with a declared tolerance, not bit equality.** Incremental and vectorised computations of the same aggregate differ in their last bits — Welford variance against a two-pass variance is the standard example — so a literal byte-equality requirement is unsatisfiable and will be quietly weakened under schedule pressure, which is worse than declaring the tolerance honestly now. The policy is:
+
+- where an operator has a registered batch lowering, the batch path runs the *same* accumulator over the batch and equality is exact;
+- where a vectorised lowering is used for speed, parity is asserted within a per-operator tolerance in units in the last place, declared in the operator registry and reported in the artifact;
+- lineage, eligibility decisions, and accept/reject outcomes are compared for exact equality, always. These are discrete and admit no tolerance.
+
+Approximate sketches are excluded from the registry precisely so that this tolerance table stays short.
+
 ### 10.3 Synthetic temporal oracle
 
-Build a small exhaustive simulator with measurements, delayed arrivals, missing records, static facts, labels, and revisable forecasts. Generate the expected result using a slow, independent reference implementation.
+Build a small exhaustive simulator with measurements, delayed arrivals, missing records, static facts, labels, and revisable forecasts. Generate the expected result using a slow reference implementation.
+
+**Make the oracle structurally independent, not merely separate.** A second implementation written by the same author from the same mental model inherits the same misconceptions, and the differential test then has little power. Force a different algorithm: for each prediction time `t`, the oracle re-filters the *entire* record log by `available_time <= t` and computes the feature in plain Python, retaining no state between prediction times. It is quadratic and unusable at scale, which is acceptable on the synthetic suite. The production engine is incremental and stateful; the oracle is stateless and exhaustive. Because eligibility is re-derived from scratch rather than maintained, the two implementations fail in different ways, and their agreement is real evidence for H2a.
 
 The oracle suite should include at least 100 hand-auditable named scenarios plus property-generated cases. Each named scenario states:
 
@@ -539,6 +603,8 @@ Reproduce representative configurations from the original repository:
 
 Replay the original fixtures where possible and compare the new engine with independent calculations. If the old and new results differ, classify the difference as intended semantic improvement, old defect, adapter difference, or new defect. Store this decision in `docs/compatibility.md`.
 
+Keep this a bounded spot-check over a handful of configurations, sufficient to document the relationship to the original system. It is not a parity project: no hypothesis in section 3 depends on bit-level agreement with the JavaScript implementation. See the reduced Phase 4.
+
 ### 10.5 Integration and performance tests
 
 - End-to-end adapter → replay → features → prediction → delayed learning.
@@ -552,9 +618,57 @@ Performance tests should run separately from the fast test suite and record hard
 
 ## 11. Phased roadmap
 
-Durations are estimates for one researcher using an LLM assistant. Exit criteria govern progress more strongly than calendar time.
+### 11.0 How these estimates were made
 
-### Phase 0 — Freeze the question and audit prior work (weeks 1–2)
+Durations are **effort-weeks** — weeks of focused work by one researcher using Claude as a coding assistant — not calendar weeks. The two differ sharply, and the translation is given below, because a schedule that silently assumes full-time availability is the most common way a research plan fails.
+
+Assuming LLM-assisted implementation changes the *shape* of the schedule as much as its length. Three effects dominate.
+
+**What compresses, by roughly threefold or better.** Package scaffolding, continuous integration, configuration and result schemas, CLI plumbing, file-format parsing, operator implementations, unit and property test enumeration, baseline model wiring, analysis and plotting scripts, artifact documentation. These are specification-bound rather than insight-bound: once the semantics are decided the code follows mechanically, which is exactly what an assistant does well.
+
+**What does not compress at all.** Reading the papers in section 4 closely enough to defend novelty against a reviewer. Deciding what `available_time` legitimately means for a USCRN update file, and defending that decision in print. Adjudicating a disagreement between the engine and the oracle. Wall-clock compute for the experiment grid, including LLM API round-trips in conditions M5–M8. Deliberating at the gates. Coauthor turnaround. Writing the argument of the paper — an assistant drafts prose, but the framing, the interpretation of a mixed result, and the limitations section are the contribution itself.
+
+**A new cost that partially offsets the gains: review.** The central claim of this project is correctness, so generated code that has not been read line by line is a liability rather than an asset. The temporal core, the eligibility rule, the window boundaries, and the forecast selector must be reviewed by hand — and an assistant's most likely failures are concentrated precisely there: off-by-one window inclusivity, tie-breaking on equal timestamps, daylight-saving and time-zone handling. Those failures are plausible-looking and silently wrong, and the synthetic oracle exists partly because they are hard to catch by reading alone. Budget review as real work. It is why Phase 2 compresses by half rather than by three.
+
+The result is a schedule with a different centre of gravity. In the original estimate, implementation dominated. Here it is roughly a third of the effort, and the critical path runs through compute, decisions, reading, and writing — none of which a coding assistant shortens. Tooling investment beyond this point buys very little.
+
+| Phase | Original | Revised | Governing constraint |
+|---|---|---|---|
+| 0 — Freeze question, audit prior work | 2 wk | 1.5 wk | You must actually read the reading list |
+| 1 — Repository skeleton | 1 wk | 2 d | Almost entirely generated |
+| 2 — Temporal core and oracle | 3 wk | 1.5 wk | Hand review of the core |
+| 3 — DSL, compiler, runtime | 3 wk | 2 wk | Diagnostic taxonomy design; parity debugging |
+| 4 — Original-system continuity | 1 wk | 3 d | Judgment about differences |
+| 5 — Dataset adapters and locked replay | 4 wk | 2 wk | Availability reconstruction and its defence |
+| 6 — Baselines | 2 wk | 1 wk | Establishing that the baselines are credible |
+| 7 — LLM proposal loop | 3 wk | 1.5 wk | Prompt and feedback-payload design |
+| 8 — Pilot and protocol freeze | 2 wk | 1.5 wk | Compute, deliberation, preregistration |
+| 9 — Official experiments | 4 wk | 3.5 wk | Compute and API wall-clock; does not compress |
+| 10 — Analysis and robustness | 3 wk | 2 wk | Interpretation and error analysis |
+| 11 — Artifact and manuscript | 5 wk | 3.5 wk | Writing the argument |
+| 12 — Pre-submission audit | 2 wk | 1.5 wk | Coauthor turnaround, which is external |
+
+Phase 11 overlaps Phases 9 and 10 by about two weeks, so the critical path is roughly **20 effort-weeks**. Add the buffer that the debugging no plan predicts will consume and **book 24 effort-weeks**, against 31 in the original estimate. The saving is real but smaller than the compression of the code alone would suggest, because the code was never the whole job.
+
+Translated to calendar time:
+
+| Focused days per week on this project | Calendar time to submission |
+|---|---|
+| 5, full time | about 5.5 months |
+| 3 | about 9 months |
+| 2 | about 13 months |
+
+Choose the row that is actually true and record that date in the risk register. Fractional availability is the largest single source of schedule error in this plan — larger than every implementation estimate above combined. All of these figures are time to *submission*; review and revision at any venue in Phase 12 adds months that no plan controls.
+
+Two consequences for how the recovered time is used.
+
+**Spend it on evidence, not on more code.** Cheap implementation makes it tempting to add operators, datasets, and features. Every addition needs semantics, tests, a state bound, and your review, and each one enlarges the surface the correctness claim must cover. Section 13 is the test: if a component has no row in the evidence map, the time is better spent on additional generation seeds, a more careful literature matrix, or another pass over the manuscript.
+
+**Pull one end-to-end run forward.** Because Phases 1–3 now complete in about six effort-weeks rather than eight calendar weeks of a longer schedule, build a deliberately crude vertical slice — USCRN only, one task, M0 and M2 only, no LLM — and take it through replay, features, prediction, and scoring by roughly effort-week 7. This does not weaken Gate A, which still governs whether the LLM is connected at all. It de-risks the evaluation pipeline while there is still time to redesign it, instead of discovering a defect in it during the Phase 8 pilot.
+
+Exit criteria continue to govern progress more strongly than elapsed time.
+
+### Phase 0 — Freeze the question and audit prior work (effort weeks 1–2)
 
 **Tasks**
 
@@ -575,7 +689,7 @@ Durations are estimates for one researcher using an LLM assistant. Exit criteria
 
 **Exit criterion:** Every claimed contribution is contrasted against at least the minimum reading list, and the project has one falsifiable central claim.
 
-### Phase 1 — Repository and deterministic skeleton (week 2)
+### Phase 1 — Repository and deterministic skeleton (effort week 2)
 
 **Tasks**
 
@@ -589,15 +703,15 @@ Durations are estimates for one researcher using an LLM assistant. Exit criteria
 
 - [ ] A clean checkout installs from the lockfile.
 - [ ] Unit tests run offline.
-- [ ] Two identical synthetic runs produce byte-identical feature outputs and equivalent result metadata, excluding declared volatile fields.
+- [ ] Two identical synthetic runs of the *same* execution path produce byte-identical feature outputs and equivalent result metadata, excluding declared volatile fields. Run-to-run determinism is bit equality; batch-versus-stream parity is the tolerance-based equivalence of section 10.2. The two must not be conflated in acceptance criteria.
 
 **Exit criterion:** CI passes on a clean environment and produces a versioned run manifest.
 
-### Phase 2 — Temporal core and oracle (weeks 3–5)
+### Phase 2 — Temporal core and oracle (effort weeks 2–4)
 
 **Tasks**
 
-- [ ] Implement canonical records and the replay clock.
+- [ ] Implement canonical records and the replay clock as the three-event priority queue of section 5.2.1, with the boundary-inclusivity constant defined in exactly one module.
 - [ ] Implement measurement, static, forecast, and label streams.
 - [ ] Implement recorded and simulated availability models.
 - [ ] Build the slow reference oracle.
@@ -613,14 +727,14 @@ Durations are estimates for one researcher using an LLM assistant. Exit criteria
 
 **Exit criterion:** The temporal oracle and all leakage tests pass before any LLM is connected.
 
-### Phase 3 — DSL, compiler, and runtime (weeks 5–8)
+### Phase 3 — DSL, compiler, and runtime (effort weeks 4–6)
 
 **Tasks**
 
 - [ ] Define the versioned JSON/YAML DSL schema.
 - [ ] Implement the initial operator registry.
 - [ ] Add type, unit, availability, lineage, cycle, and resource analyses.
-- [ ] Compile accepted programs into both batch and streaming execution.
+- [ ] Compile accepted programs into streaming execution, and into batch execution only for nodes with a registered equivalent lowering.
 - [ ] Generate feature cards and execution plans.
 - [ ] Implement batch/stream differential tests.
 
@@ -628,33 +742,36 @@ Durations are estimates for one researcher using an LLM assistant. Exit criteria
 
 - [ ] Every invalid synthetic program returns a stable diagnostic code.
 - [ ] Every operator has semantic, unit, boundary, and property tests.
-- [ ] Batch and stream outputs match on generated cases.
+- [ ] Batch and stream outputs match on generated cases within the declared per-operator tolerance, with exact agreement on lineage and accept/reject outcomes.
 - [ ] Measured state does not exceed the compiled bound after warm-up.
 
 **Exit criterion:** A human-written feature program can be compiled and replayed on the synthetic dataset with verified lineage.
 
-### Phase 4 — Original-system parity prototype (weeks 8–9)
+### Phase 4 — Original-system continuity (effort week 6, reduced scope)
+
+This phase was originally a two-week parity project. It is reduced because its exit criterion is narrative rather than evidential: no hypothesis in section 3 depends on reproducing the JavaScript system's outputs. What the paper needs from it is M2 — a credible expert baseline modeled after `iot-fusion` — and M2 can be written directly in the DSL without a differential harness against the original runtime. The recovered time is already absorbed into the estimates of section 11.0.
 
 **Tasks**
 
-- [ ] Port representative `iot-fusion` feature configurations into the DSL.
-- [ ] Recreate the three conceptual stages: preprocessing, partial fusion, and full fusion.
-- [ ] Write compatibility notes for original resampling, forecasts, and horizon behavior.
+- [ ] Express the original paper's measurement, autoregressive, date/time, and weather feature groups in the DSL as the M2 baseline.
+- [ ] Recreate the three conceptual stages — preprocessing, partial fusion, full fusion — at the level of the feature program, not the runtime.
+- [ ] Write compatibility notes for original resampling, forecast handling, and horizon behavior.
+- [ ] Spot-check a handful of representative `iot-fusion` configurations against the new engine, per section 10.4.
 - [ ] Benchmark the new in-process engine on equivalent synthetic loads.
 
 **Acceptance tests**
 
-- [ ] Expected original feature vectors are reproduced or differences are documented and independently verified.
-- [ ] The new implementation can express the paper's measurement, autoregressive, date/time, and weather feature groups.
+- [ ] The DSL expresses every feature group used in the original paper, or the inexpressible cases are documented as a stated limitation of the DSL.
+- [ ] Spot-check differences are classified and recorded in `docs/compatibility.md`.
 
-**Exit criterion:** The prototype demonstrates continuity with the original research rather than only a new standalone AutoFE tool.
+**Exit criterion:** M2 is a defensible expert baseline and the relationship to the original system is documented. Restore the full parity project only if a coauthor or reviewer requires demonstrated continuity; it is a schedule risk rather than a source of evidence.
 
-### Phase 5 — Dataset adapters and locked replay (weeks 9–12)
+### Phase 5 — Dataset adapters and locked replay (effort weeks 6–8)
 
 **Tasks**
 
-- [ ] Implement Enefit adapter and competition-style availability replay.
-- [ ] Implement USCRN update-file adapter and final-target separation.
+- [ ] Implement the USCRN update-file adapter and final-target separation **first**. It is small, freely downloadable without competition terms, and its availability must be *reconstructed* from dissemination windows rather than read off a delivered identifier — the harder adapter problem and the more novel artifact. Build the adapter machinery here.
+- [ ] Implement the Enefit adapter and competition-style availability replay second. `data_block_id` hands availability to you, so it exercises less of the machinery despite Enefit being the primary predictive dataset.
 - [ ] Implement Beijing adapter and declared simulated-arrival scenarios.
 - [ ] Optionally implement HRRR/Open-Meteo forecast-run extraction.
 - [ ] Generate dataset cards, checksums, time ranges, schema summaries, licenses, and provenance.
@@ -669,7 +786,7 @@ Durations are estimates for one researcher using an LLM assistant. Exit criteria
 
 **Exit criterion:** The three minimum datasets replay end to end without LLM-generated features.
 
-### Phase 6 — Baselines (weeks 12–14)
+### Phase 6 — Baselines (effort weeks 8–9)
 
 **Tasks**
 
@@ -686,7 +803,7 @@ Durations are estimates for one researcher using an LLM assistant. Exit criteria
 
 **Exit criterion:** Baselines are credible enough that an improvement by the proposed system would be meaningful.
 
-### Phase 7 — LLM proposal loop (weeks 14–17)
+### Phase 7 — LLM proposal loop (effort weeks 9–11)
 
 **Tasks**
 
@@ -706,7 +823,7 @@ Durations are estimates for one researcher using an LLM assistant. Exit criteria
 
 **Exit criterion:** The full loop improves, matches, or fails against baselines in a measurable and auditable way on development splits. Continue even if the result is negative; revise the claim, not the hidden test protocol.
 
-### Phase 8 — Pilot study and protocol freeze (weeks 17–19)
+### Phase 8 — Pilot study and protocol freeze (effort weeks 11–12)
 
 **Tasks**
 
@@ -718,7 +835,7 @@ Durations are estimates for one researcher using an LLM assistant. Exit criteria
 
 **Exit criterion:** One command can execute a reduced experiment grid and regenerate its tables, and no design choice depends on final test outcomes.
 
-### Phase 9 — Official experiments (weeks 20–23)
+### Phase 9 — Official experiments (effort weeks 12–16)
 
 **Execution order**
 
@@ -737,10 +854,11 @@ Durations are estimates for one researcher using an LLM assistant. Exit criteria
 - [ ] Record and explain failed runs without deleting them.
 - [ ] Generate tables and figures only through version-controlled scripts.
 - [ ] Do not tune after viewing test performance. Any necessary correction triggers a documented new experiment version and rerun of all affected methods.
+- [ ] Estimate the compute and API wall-clock envelope during the Phase 8 pilot, and parallelise across tasks, seeds, and methods wherever runs are independent. This phase is the schedule's hard floor: it is bounded by compute and API round-trips rather than by implementation speed, and it is the one phase an assistant does not shorten. If it must be shortened, cut the grid — section 9.2 has already cut the cheapest axis — rather than expecting tooling to absorb it.
 
 **Exit criterion:** Every number intended for the paper maps to a run ID, configuration, code revision, data hash, and script.
 
-### Phase 10 — Analysis and robustness (weeks 23–26)
+### Phase 10 — Analysis and robustness (effort weeks 16–18)
 
 **Required analyses**
 
@@ -756,7 +874,7 @@ Durations are estimates for one researcher using an LLM assistant. Exit criteria
 
 **Stop condition:** The central claim must be narrowed if M8 does not outperform fair baselines or if correctness cannot be established. A valid alternative paper may focus on the verified DSL, the temporal benchmark, or evidence about when LLM feature generation fails.
 
-### Phase 11 — Artifact and manuscript (weeks 24–29, overlapping)
+### Phase 11 — Artifact and manuscript (effort weeks 15–19, overlapping)
 
 **Artifact checklist**
 
@@ -792,7 +910,7 @@ Durations are estimates for one researcher using an LLM assistant. Exit criteria
 - cost–quality or feature-count–quality frontier;
 - runtime and memory scaling.
 
-### Phase 12 — Pre-submission audit and submission (weeks 29–31)
+### Phase 12 — Pre-submission audit and submission (effort weeks 19–20)
 
 **Scientific audit**
 
@@ -867,7 +985,28 @@ Follow these rules:
 - DSL changes create a new schema version.
 - Corrections after protocol freeze are recorded in the decision log.
 
-## 13. Risks and mitigations
+## 13. From software component to paper: the evidence map
+
+The software is instrumental. It exists to produce the tables and figures of the manuscript, and every engineering task should be traceable to a row below. A component that cannot be traced to one is, by definition, optional work competing for the same weeks as work that can.
+
+| Hypothesis | Evidence the paper reports | Component that produces it | Paper element |
+|---|---|---|---|
+| H1 predictive utility | Paired per-task metric differences with block-bootstrap intervals; M8 against M2 and M3 under equalised candidate evaluations | `evaluation/`, `models/`, the search loop | Main results table; paired per-task plot |
+| H2a construction | Zero ineligible dependencies over property-generated arrival histories; agreement with the stateless oracle | `temporal/` replay queue, brute-force oracle, property suite | Correctness section; architecture and timeline figures |
+| H2b verification | Confusion matrix over labelled leaking and valid batch programs, including false-rejection rate, by diagnostic code | `compiler/` static analysis, stable diagnostic codes | Rejection-breakdown figure |
+| H3 semantic context | M5 against M8 at equal budget, on both predictive metric and acceptance efficiency | `llm/` prompt conditions | Ablation table |
+| H4 practical cost | Throughput, latency percentiles, peak memory, tokens, monetary cost, human-review event log | `runtime/` benchmarks, LLM call log, review protocol | Cost–quality frontier; runtime scaling |
+| H5 generalization | Entity-held-out and Beijing cross-domain results | `adapters/`, frozen split manifests | Transfer table |
+
+Three consequences for how the implementation is scheduled.
+
+**Correctness evidence is cheap and early; utility evidence is expensive and late.** H2a, H2b, and H4 depend only on the engine, the synthetic oracle, and the benchmarks — all available by the end of Phase 3, at roughly a quarter of the schedule. H1 and H5 depend on the full experimental grid and cannot land before Phase 9. Build so that a publishable correctness-and-benchmark contribution exists at Gate A even if the utility result later fails, because Gate D explicitly permits that paper. This ordering is the project's main insurance: the riskiest hypothesis is not the one the schedule depends on.
+
+**Engineering with no row in this table is deferrable.** Kafka and MQTT adapters, datasets beyond the minimum four, MLflow, and a full `iot-fusion` parity harness produce no evidence for any hypothesis in section 3. They are legitimate future work and illegitimate schedule risk. Where the roadmap already marks such work optional, the evidence map is the reason.
+
+**Write the results section before the results exist.** At Phase 8, draft every table and figure caption of the manuscript with the numbers left blank, and check each against this map. A caption that cannot be written without knowing the outcome describes an exploratory analysis rather than a confirmatory test, and belongs in a clearly separated part of the paper. This also surfaces missing instrumentation while there is still time to add it: if a planned figure has no component in the middle column, either the component is unbuilt or the figure is unearned.
+
+## 14. Risks and mitigations
 
 | Risk | Consequence | Mitigation |
 |---|---|---|
@@ -882,12 +1021,19 @@ Follow these rules:
 | DSL is too permissive | Verification becomes unreliable | Prefer compositional primitives with formal semantics and bounded state |
 | Test-set overfitting through researcher decisions | Inflated results | Frozen splits and prompts, logged decisions, optional preregistration |
 | Dataset redistribution restrictions | Artifact cannot be shared | Release download scripts, hashes, and derived metadata; verify each license |
+| Feedback payload quality confounds the M7/M8 contrast | The headline ablation measures prompt engineering rather than the method | Specify and freeze the payload at Gate C; version it with the prompt; treat payload changes as new conditions |
+| Window state silently evicted under bursty arrival | Wrong features that pass every correctness test | Declare `max_input_rate` per source; the runtime raises rather than evicts |
+| Batch/stream parity demanded as bit equality | An unsatisfiable criterion is quietly weakened late | Declare per-operator tolerances up front; exclude approximate sketches; keep discrete outputs exact |
+| Researcher availability is fractional | The 20-week critical path silently becomes a year | Record actual focused days per week; derive the calendar date from the translation table in section 11.0, never from the effort estimate |
+| Generated code outpaces review capacity | Unreviewed code carries the correctness claim | Keep the operator registry small; review the temporal core by hand; treat code volume as a liability in this project |
 
-## 14. Milestone decision gates
+## 15. Milestone decision gates
 
 ### Gate A — after Phase 3
 
-Proceed only if the temporal core can prevent all named leakage cases and batch/stream outputs match. Otherwise simplify the DSL and repair the formal model.
+Proceed only if the temporal core prevents all named leakage cases and batch/stream outputs agree within the declared parity tolerance, with exact agreement on lineage. Otherwise simplify the DSL and repair the formal model.
+
+By this gate the correctness-and-benchmark paper described at Gate D should already be viable on the evidence produced so far. If it is not, the engine is not yet a publishable foundation, and no amount of downstream experimentation will make it one.
 
 ### Gate B — after Phase 6
 
@@ -906,49 +1052,49 @@ Choose the manuscript's actual thesis based on evidence:
 - **Utility only in limited regimes:** state those regimes precisely and avoid universal claims.
 - **No credible contribution:** do not force submission; publish the artifact or redesign the research question.
 
-## 15. Immediate first sprint
+## 16. Immediate first sprint
 
-The first ten working days should produce a reviewable vertical slice.
+The first six working days should produce a reviewable vertical slice. With an assistant, the limiting factor in this sprint is your review of the temporal core rather than the writing of it, so the day boundaries below are review checkpoints as much as implementation targets.
 
-### Days 1–2
+### Day 1
 
 - [ ] Create the new repository and copy this plan into `docs/research_plan.md`.
 - [ ] Add `AGENTS.md`, `pyproject.toml`, lockfile, CI, code quality tools, and test directories.
 - [ ] Write the canonical Pydantic record types and terminology page.
 
-### Days 3–4
+### Day 2
 
-- [ ] Implement a deterministic priority-queue replay ordered by `available_time` with an explicit tie rule.
+- [ ] Implement the three-event priority-queue replay ordered by `available_time` — record arrival, prediction request, label reveal — with the boundary-inclusivity constant defined in exactly one module.
 - [ ] Add a synthetic measurement stream, revisable forecast stream, and delayed label stream.
-- [ ] Write ten named temporal scenarios.
+- [ ] Write ten named temporal scenarios and the stateless brute-force oracle of section 10.3 that scores them.
 
-### Days 5–6
+### Day 3
 
 - [ ] Implement `last`, `lag`, `mean`, `variance`, `missing_count`, `staleness`, and forecast-selection operators.
 - [ ] Add lineage and eligibility checks.
 - [ ] Add property tests proving that future arrivals do not affect past outputs.
 
-### Days 7–8
+### Day 4
 
-- [ ] Define the first DSL schema and compile one human-written pipeline.
-- [ ] Produce batch and streaming outputs and compare them.
+- [ ] Define the first DSL schema as a JSON dataflow graph and compile one human-written pipeline.
+- [ ] Produce batch and streaming outputs and compare them under the parity policy of section 10.2.
 - [ ] Generate a feature card that shows source, window, unit, availability rule, and memory bound.
 
-### Days 9–10
+### Days 5–6
 
-- [ ] Implement a minimal Enefit sample adapter using a locally obtained dataset sample.
+- [ ] Implement a minimal USCRN sample adapter over a locally obtained slice of the hourly update archive, consistent with the build order in Phase 5.
 - [ ] Run persistence, raw-feature, and one manual-feature baseline on a development slice.
 - [ ] Write `docs/prototype_report.md` with observed limitations and the Phase 2–3 backlog.
 
 **Sprint demonstration:** Given a prediction time and several measurement and forecast revisions, the CLI explains which records are eligible, compiles a feature program, produces the vector and lineage, rejects one leaking program, and evaluates a simple predictor using delayed labels.
 
-## 16. Definition of done
+## 17. Definition of done
 
 The research project is done when:
 
 - [ ] the implementation satisfies all compiler and temporal invariants;
 - [ ] at least Enefit, USCRN, Beijing, and the synthetic oracle are evaluated;
-- [ ] M0–M8 are compared under frozen, fair protocols;
+- [ ] M0–M8 are compared under frozen, fair protocols with candidate evaluations equalised;
 - [ ] the LLM's incremental value and the verifier's incremental value are isolated;
 - [ ] predictive, correctness, resource, and cost outcomes are reported with uncertainty;
 - [ ] negative results and failed candidates are retained and analyzed;
@@ -957,7 +1103,7 @@ The research project is done when:
 - [ ] the selected venue's current policies are satisfied;
 - [ ] all coauthors approve the submission.
 
-## 17. Link index
+## 18. Link index
 
 ### Foundation
 

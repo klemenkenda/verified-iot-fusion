@@ -1,0 +1,48 @@
+[project]
+name = "vifusion"
+version = "0.0.0"
+description = "Verified LLM-assisted feature engineering for heterogeneous IoT streams"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Klemen Kenda", email = "klemen.kenda@ijs.si" }]
+
+# Direct dependencies from section 6 of docs/research_plan.md. Phase 1 pins every one of
+# these to an exact version and commits uv.lock; until then this list only records intent.
+dependencies = [
+    "pydantic",
+    "polars",
+    "duckdb",
+    "pint",
+    "river",
+    "lightgbm",
+]
+
+[project.scripts]
+vifusion = "vifusion.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "hypothesis",
+    "ruff",
+    "mypy",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vifusion"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 100
+
+[tool.mypy]
+files = ["src", "tests"]
+strict = true

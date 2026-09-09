@@ -1,0 +1,22 @@
+# Draft. Section 6 of docs/research_plan.md requires this file, the repository name, the
+# package name, the manuscript, and the Zenodo archive to agree. The name is settled in
+# docs/decision_log.md; the license and the DOI are still open, so resolve them before the
+# first release.
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "verified-iot-fusion: verified LLM-assisted feature engineering for heterogeneous IoT streams"
+abstract: >-
+  A research artifact in which an LLM proposes feature programs in a constrained DSL and a
+  compiler checks types, units, lineage, temporal eligibility, and resource bounds before
+  execution.
+type: software
+authors:
+  - family-names: Kenda
+    given-names: Klemen
+    email: klemen.kenda@ijs.si
+    affiliation: "Jožef Stefan Institute"
+version: 0.0.0
+date-released: 2026-09-09
+repository-code: "https://github.com/klemenkenda/verified-iot-fusion"
+# license: TBD
+# doi: TBD

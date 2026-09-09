@@ -1,0 +1,36 @@
+# Data: raw and prepared data are never committed (see data/README.md).
+data/*
+!data/README.md
+
+# Generated artifacts: keep the README and small cited artifacts only.
+artifacts/*
+!artifacts/README.md
+
+# Experiment outputs are append-only but large; commit deliberately.
+experiments/**/*.parquet
+experiments/**/*.duckdb
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
