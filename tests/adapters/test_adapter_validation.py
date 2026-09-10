@@ -183,13 +183,17 @@ def test_every_stream_is_a_function_of_time(name: str) -> None:
 
 
 def test_a_forecast_issue_may_carry_many_valid_times(enefit_bundle: DatasetBundle) -> None:
-    """The other direction: several valid times per issue is correct, not a collision."""
+    """The other direction: several valid times per issue is correct, not a collision.
+
+    Weather is one entity per grid point, not broadcast onto a prosumer unit, so the issue
+    lives on ``station:59.0:25.5`` rather than on unit ``7``.
+    """
     issue = [
         record
         for record in enefit_bundle.records
         if record.source_id == "enefit_weather_forecast"
         and record.feature_name == "temperature"
-        and record.entity_id == "7"
+        and record.entity_id == "station:59.0:25.5"
         and record.provenance["data_block_id"] == 1
     ]
     assert len({record.valid_time for record in issue}) == 3

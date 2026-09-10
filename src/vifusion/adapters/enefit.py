@@ -15,14 +15,28 @@ instant is declared. Section 14 asks for every timing field to be classified rat
 guessed well, and a half-recorded field described as fully recorded is the overstatement it
 warns about.
 
-**Global streams and the entity graph.** Prices and weather are not per prosumer, but a
-stream is keyed by ``(entity, source, feature)`` and a program is instantiated per entity
-(section 5.3). Until the declared entity graph exists, this adapter broadcasts global records
-to every requested prediction unit, which is semantically exact and quadratic in the wrong
-places: it is a fixture-scale and small-slice technique, not a way to read the whole
-competition. ``broadcast=False`` keeps them on a single :data:`GLOBAL_ENTITY` instead, which
-is cheap but leaves them unreadable from a per-unit program. The entity graph is the real
-answer and it belongs to the phase that builds it.
+**Global streams and the entity graph.** Prices are not per prosumer, but a stream is keyed
+by ``(entity, source, feature)`` and a program is instantiated per entity (section 5.3).
+Until the declared entity graph exists, this adapter broadcasts them to every requested
+prediction unit, which is semantically exact and quadratic in the wrong places: it is a
+fixture-scale and small-slice technique, not a way to read the whole competition.
+``broadcast=False`` keeps them on a single :data:`GLOBAL_ENTITY` instead, which is cheap but
+leaves them unreadable from a per-unit program. The entity graph is the real answer and it
+belongs to the phase that builds it. Weather is not broadcast at all — see below.
+
+**Weather is many entities, not one collapsed stream.** The two weather files carry many
+grid points per timestamp, and picking one to fold onto a prosumer's stream — however the
+choice is made — throws away data the modelling side, not this adapter, should be choosing
+among. Kenda et al. 2019 (docs/literature/kenda2019streaming.pdf, confirmed against the PDF
+before this was built) treats every physical source as its own independent adapter and
+stream, with a declared configuration saying which streams feed which entity's feature
+vector (their Section 4.1, Algorithm 3's stream set ``A``) — nothing is collapsed or
+averaged in pre-processing. :attr:`CsvSource.entity_from_key` follows that: every grid point
+becomes its own entity, ``station:{latitude}:{longitude}``, carrying its full series. What
+is declared here and not yet built is the wiring — a prosumer's feature program cannot read
+a station entity's stream until the cross-entity join :mod:`vifusion.dsl.schema` already
+names as a later phase exists. ``weather_station_to_county_mapping.csv`` is the material
+for that wiring, in the same spirit as Kenda's per-entity configuration, once it exists.
 
 **Targets are labels, and their block is not their release.** ``train.csv`` carries the
 target, and it enters as ``label`` records in their own source, excluded from
@@ -63,7 +77,9 @@ whichever machine parses it, so the same file would mean different things on a l
 Ljubljana and a CI runner in UTC."""
 
 GLOBAL_ENTITY = "market"
-"""Entity for streams that belong to no prosumer: prices, and weather when not broadcast."""
+"""Entity for non-unit streams read with ``broadcast=False``: prices, currently. Weather is
+never on this entity — :attr:`CsvSource.entity_from_key` gives it one entity per grid point
+regardless of ``broadcast``."""
 
 TARGET_SOURCE_ID = "enefit_target"
 LABEL_FEATURE = "target"
@@ -143,6 +159,17 @@ class CsvSource:
 
     key_columns: tuple[str, ...] = ()
     """Columns that, with the event time, make a row's identity unique."""
+
+    entity_from_key: bool = False
+    """Read each distinct ``key_columns`` value as its own entity, ``station:{key}``, instead
+    of broadcasting the source onto prediction units.
+
+    A stream is keyed by ``(entity, source, feature)``, so the two weather files' many grid
+    points per timestamp cannot share one prosumer's stream without either colliding or
+    discarding data. Rather than pick or average a point in pre-processing, every grid point
+    becomes its own entity, carrying its full series — see the module docstring on why
+    (Kenda et al. 2019's per-source adapters and declared stream wiring) and on what is not
+    yet built (a program reading a station entity from a prosumer's own)."""
 
     variant_column: str | None = None
     variants: tuple[tuple[str, str], ...] = ()
@@ -228,6 +255,7 @@ SOURCES: tuple[CsvSource, ...] = (
             ("shortwave_radiation", "watt_hour / meter ** 2"),
         ),
         key_columns=("latitude", "longitude"),
+        entity_from_key=True,
         description="Measured weather at a grid point.",
     ),
     CsvSource(
@@ -241,6 +269,7 @@ SOURCES: tuple[CsvSource, ...] = (
             ("surface_solar_radiation_downwards", "watt_hour / meter ** 2"),
         ),
         key_columns=("latitude", "longitude"),
+        entity_from_key=True,
         description="Archived weather forecast, revisable by later issues.",
         max_forecast_horizon=MAX_FORECAST_HORIZON,
     ),
@@ -321,13 +350,12 @@ def read(
     present. Global streams are broadcast to those units unless ``broadcast`` is False — see
     the module docstring on why that is a small-slice technique rather than the answer.
 
-    ``sources`` selects source ids; None reads every file present. It exists because reading
-    everything is not currently possible *or* meaningful. The two weather files carry 112 grid
-    points that all collapse onto one stream per prediction unit — see the module docstring —
-    so features built on them are arbitrary, and reading them broadcast across even two units
-    exhausts tens of gigabytes before producing a number nobody should trust. Naming the
-    sources is how a caller says which streams the result is about; the bundle's notes record
-    the choice, so a card over a slice cannot be mistaken for a card over the competition.
+    ``sources`` selects source ids; None reads every file present. The two weather files are
+    the expensive ones regardless — ``forecast_weather.csv`` alone is most of a gigabyte, read
+    in full because :attr:`CsvSource.entity_from_key` keeps every grid point rather than
+    picking one. Naming the sources is how a caller says which streams the result is about;
+    the bundle's notes record the choice, so a card over a slice cannot be mistaken for a card
+    over the competition.
     """
     known = {source.source_id for source in SOURCES}
     if sources is not None:
@@ -472,6 +500,7 @@ def _read_source(
 ) -> Iterator[CanonicalRecord]:
     path = root / source.filename
     for line, row in _rows(path):
+        key = ":".join(_require(row, column, path, line).strip() for column in source.key_columns)
         block_text = _require(row, source.block_column, path, line).strip()
         try:
             block_id = int(float(block_text))
@@ -499,10 +528,14 @@ def _read_source(
         if source.kind is RecordKind.FORECAST and valid_time is None:
             raise AdapterError(f"{path.name} declares a forecast source with no valid time column")
 
-        key = ":".join(_require(row, column, path, line).strip() for column in source.key_columns)
         variant = _variant(source, row, path, line)
         owners: tuple[str, ...]
-        if source.scope == "unit":
+        if source.entity_from_key:
+            # Every grid point is its own entity: see the module docstring on why nothing is
+            # picked or averaged here, and on the cross-entity join a prosumer's program still
+            # needs before it can read one.
+            owners = (f"station:{key}",)
+        elif source.scope == "unit":
             owners = _owning_units(source, row, path, line, unit_lookup)
         elif broadcast:
             owners = unit_ids
@@ -514,7 +547,9 @@ def _read_source(
                 continue
             for column, unit in source.features:
                 name = column if variant is None else f"{column}_{variant}"
-                suffix = f":{key}" if key else ""
+                # The key is already the entity's name when entity_from_key is set; repeating
+                # it in the suffix would be redundant rather than additional information.
+                suffix = "" if source.entity_from_key or not key else f":{key}"
                 # A forecast's identity includes the instant it describes: several rows of
                 # one issue differ only in their valid time, and an identifier that ignored
                 # it would name them all the same record.

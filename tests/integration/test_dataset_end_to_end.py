@@ -148,18 +148,24 @@ def test_a_forecast_operator_selects_the_latest_eligible_issue() -> None:
 
     An implementation that grouped by valid time and took the last issue would pass the
     second and fail the first, while producing entirely plausible numbers in both.
+
+    Read against the weather source's own entity, ``station:59.0:25.5``: weather is one
+    entity per grid point (:attr:`enefit.CsvSource.entity_from_key`), not broadcast onto a
+    prosumer unit, so the forecast-selection logic under test lives there rather than on "7"
+    until the cross-entity join names a station to a prosumer.
     """
     bundle = read_enefit()
     plan = _plan("enefit_consumption.yaml")
     log = canonical_log(bundle)
     lead = timedelta(hours=1)
     zone = enefit.DATASET_TIMEZONE
+    station = "station:59.0:25.5"
 
     only_older = datetime(2021, 9, 2, 9, tzinfo=zone) - lead
     both = datetime(2021, 9, 3, 9, tzinfo=zone) - lead
 
-    before = streaming.execute(plan, log, [PredictionRequest("7", only_older)])[0]
-    after = streaming.execute(plan, log, [PredictionRequest("7", both)])[0]
+    before = streaming.execute(plan, log, [PredictionRequest(station, only_older)])[0]
+    after = streaming.execute(plan, log, [PredictionRequest(station, both)])[0]
 
     assert before.by_name("temp_fc_1h").value == 14.9, "block 1's issue, the only eligible one"
     assert after.by_name("temp_fc_1h").value == 16.8, "block 2's issue, the latest eligible one"

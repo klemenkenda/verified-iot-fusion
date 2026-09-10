@@ -244,10 +244,9 @@ def test_a_station_that_is_in_no_file_is_an_error_not_an_empty_bundle() -> None:
 def test_naming_sources_reads_only_those() -> None:
     """Scope again, and for a blunter reason than the station filter.
 
-    Enefit's two weather files carry 112 grid points that all collapse onto one stream per
-    prediction unit, so features built on them are arbitrary; reading them broadcast across
-    even two units exhausts tens of gigabytes first. Until the declared entity graph exists, a
-    usable Enefit read names the sources it is about.
+    Enefit's two weather files are large regardless of how many prediction units are asked
+    for, now that every grid point is read in full as its own entity rather than picked or
+    broadcast. A usable slice still needs to name the sources it is about.
     """
     from tests.adapters.conftest import BLOCK_SCHEDULE, ENEFIT_ROOT
 
