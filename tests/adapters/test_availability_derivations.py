@@ -236,3 +236,45 @@ def test_a_station_that_is_in_no_file_is_an_error_not_an_empty_bundle() -> None:
 
     with pytest.raises(AdapterError, match="appear in no update file"):
         uscrn.read_updates(USCRN_ROOT / "updates", root=USCRN_ROOT, stations=["94074", "00000"])
+
+
+# --- reading a slice of the sources, not only of the entities --------------------------------
+
+
+def test_naming_sources_reads_only_those() -> None:
+    """Scope again, and for a blunter reason than the station filter.
+
+    Enefit's two weather files carry 112 grid points that all collapse onto one stream per
+    prediction unit, so features built on them are arbitrary; reading them broadcast across
+    even two units exhausts tens of gigabytes first. Until the declared entity graph exists, a
+    usable Enefit read names the sources it is about.
+    """
+    from tests.adapters.conftest import BLOCK_SCHEDULE, ENEFIT_ROOT
+
+    wanted = ["enefit_target", "enefit_electricity"]
+    bundle = enefit.read(ENEFIT_ROOT, schedule=BLOCK_SCHEDULE, sources=wanted)
+    assert {record.source_id for record in bundle.records} == set(wanted)
+    assert any("enefit_electricity" in note for note in bundle.notes)
+
+
+def test_a_source_slice_does_not_move_anything_it_keeps() -> None:
+    """Dropping a file must not change the availability of the records that remain."""
+    from tests.adapters.conftest import BLOCK_SCHEDULE, ENEFIT_ROOT
+
+    whole = enefit.read(ENEFIT_ROOT, schedule=BLOCK_SCHEDULE)
+    sliced = enefit.read(ENEFIT_ROOT, schedule=BLOCK_SCHEDULE, sources=["enefit_target"])
+    kept = {
+        record.record_id: record for record in whole.records if record.source_id == "enefit_target"
+    }
+    assert kept
+    assert {record.record_id for record in sliced.records} == set(kept)
+    for record in sliced.records:
+        assert record.available_time == kept[record.record_id].available_time
+
+
+def test_an_unknown_source_is_refused_rather_than_silently_dropped() -> None:
+    """A typo would otherwise produce a smaller bundle under a name for a larger one."""
+    from tests.adapters.conftest import BLOCK_SCHEDULE, ENEFIT_ROOT
+
+    with pytest.raises(AdapterError, match="unknown Enefit sources"):
+        enefit.read(ENEFIT_ROOT, schedule=BLOCK_SCHEDULE, sources=["enefit_target", "weather"])

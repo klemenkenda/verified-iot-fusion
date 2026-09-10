@@ -1282,3 +1282,51 @@ freeze and expensive after it.
   the option changed rather than the task simply naming a later year.
 - **Made before or after viewing test results:** before.
 - **Phase / gate:** Phase 6, for Gate B
+
+---
+
+### 2026-09-10 — First Gate B baseline: credible, and the expert bar is barely above the trivial one
+
+- **What was run:** `configs/tasks/uscrn_temperature_1h_archive.yaml`, validation fold, station
+  94075, under `uscrn_archive` — 23,197 training examples over two years and nine months of the
+  real update archive, 717 withheld as unrevealed (the declared thirty-day publication delay,
+  minus hours the archive never delivered), 2,039 scored.
+
+```text
+method                 n       R2        MAE       RMSE     MASE       bias
+M0/identity         2039   0.7174     2.1197     2.9247    2.293    -0.0050
+M1/ridge            2039   0.8350     1.5769     2.2350    1.706    -0.1874
+M1/lightgbm         2039   0.9056     1.2121     1.6906    1.311    -0.0026
+M2/ridge            2039   0.8477     1.4917     2.1472    1.614    -0.1596
+M2/lightgbm         2039   0.9030     1.2290     1.7131    1.330    -0.1267
+```
+
+- **The floor lands where the delivery schedule says it must, for the third time.** M0's MASE
+  is 2.29 here, 2.14 on the single-year split, 1.87 on the fixture. The task configuration
+  predicted "near two" in prose from the dissemination-window argument alone, before any real
+  data existed. Nothing else in this project has been confirmed three times on three different
+  archives, and it is the strongest evidence so far that the replay clock is right.
+- **Baselines are credible.** The ordering is sensible, no metric is implausible, the bias
+  terms are small, and the delayed-label rule visibly withheld the right number of training
+  examples. Nothing here suggests a defect in the evaluation.
+- **But M2 does not clear M1, and that is the finding.** The expert-engineered program —
+  windowed statistics, staleness, gap counts, within-source fusion, thirteen features — beats
+  raw values plus calendar under ridge (MAE 1.4917 against 1.5769) and *loses* under LightGBM
+  (1.2290 against 1.2121). The two predictors disagree about the sign. Section 9.2 keeps two
+  predictors precisely so that a claim can be checked for model-specificity, and here it says
+  the M2-over-M1 effect is not robust: a boosted tree given raw values and a clock recovers
+  whatever the expert features encode.
+- **Why this matters more than the numbers.** Section 9.1 casts M2 as "the human bar H1 must
+  clear". If that bar is level with raw-plus-calendar on this task, then beating it means
+  little, and H1 would be tested against a weak opponent — the mirror image of the OCTree
+  problem in the novelty memo, where the bar may be too *high*. Either the task is one where
+  feature engineering cannot matter much (hourly temperature is strongly autocorrelated and a
+  tree exploits that directly), or M2 is not yet a serious expert program. Both are answerable,
+  and neither is answerable by adding an LLM.
+- **What has not been done, deliberately:** nothing has touched the test fold, and these
+  validation figures are optimistic for the four tuned cells because their hyperparameters were
+  chosen on this fold. The M2-versus-M1 comparison has to be made on test, once the protocol is
+  frozen. It is recorded now because it bears on whether the protocol *should* be frozen as it
+  stands.
+- **Made before or after viewing test results:** before — the test fold is untouched.
+- **Phase / gate:** Phase 6 — this is the evidence Gate B is decided on.

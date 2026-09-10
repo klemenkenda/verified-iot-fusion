@@ -26,7 +26,8 @@ One command on a fresh machine:
 uv run python tools/fetch_datasets.py
 ```
 
-That fetches all three into the layout below -- roughly 2.5 GB, most of it USCRN. Everything
+That fetches all three into the layout below. Measured on a complete run: 2.2 GB in total --
+USCRN 1.2 GB in 28,353 files, Enefit 1.0 GB in 19, Beijing 32 MB in 12. Everything
 is resumable and additive: files already present are left alone, so an interrupted fetch is
 finished by running the same command again. Each dataset also has its own script if you want
 just one.

@@ -107,8 +107,17 @@ tension between that and this repository's MIT code licence is recorded in
 ```bash
 uv run vifusion dataset-card enefit --root data/raw/enefit \
     --option first_block_id=0 --option first_release=2021-08-31T11:00:00+03:00 \
-    --option entities=7,9 --output artifacts/cards/enefit.json
+    --option entities=7,9 \
+    --option sources=enefit_target,enefit_client,enefit_electricity,enefit_gas \
+    --output artifacts/cards/enefit.json
 ```
+
+**Name the sources.** Without `--option sources=`, this reads the two weather files as well,
+and that does not finish: 112 grid points broadcast across even two prediction units exhausts
+tens of gigabytes before producing features that are arbitrary anyway — see *Weather is not
+yet readable per prosumer* below. The four sources above are the ones a result can currently
+be about. The bundle's notes record which were read, so a card over a slice cannot be mistaken
+for a card over the competition.
 
 **The block schedule is yours to declare, but the data narrows it to about an hour.**
 `data_block_id` records which rows were delivered together and in what order; it does not

@@ -849,7 +849,9 @@ generator this repository wrote.)*
 
 **Exit criterion:** Baselines are credible enough that an improvement by the proposed system would be meaningful.
 
-*(Not yet met, and the remaining distance is data rather than code. The first real-data run —
+*(Half met. Credible: yes, on the evidence above. Meaningful: that is the open question, and it
+turns on M2 rather than on the pipeline — see the Gate B baseline below. The earlier run kept
+for comparison — the first real-data run —
 `configs/tasks/uscrn_temperature_1h_2023.yaml`, validation fold, station 94075 — is ordered as
 it should be and the floor lands where the delivery schedule says it must:*
 
@@ -883,6 +885,38 @@ is the Gate B task. `tools/fetch_datasets.py` acquires all of it; 28,349 update 
 yearly target files are now on disk.*
 
 *Enefit still needs the entity graph, and that is unchanged.)*
+
+*(**The Gate B baseline, run 2026-09-10** — `uscrn_temperature_1h_archive`, validation fold,
+station 94075, 23,197 training examples over two years and nine months of real archive, 717
+withheld as unrevealed, 2,039 scored:*
+
+```text
+method                 n       R2        MAE       RMSE     MASE       bias
+M0/identity         2039   0.7174     2.1197     2.9247    2.293    -0.0050
+M1/ridge            2039   0.8350     1.5769     2.2350    1.706    -0.1874
+M1/lightgbm         2039   0.9056     1.2121     1.6906    1.311    -0.0026
+M2/ridge            2039   0.8477     1.4917     2.1472    1.614    -0.1596
+M2/lightgbm         2039   0.9030     1.2290     1.7131    1.330    -0.1267
+```
+
+***The baselines are credible.** The ordering is sensible, no metric is implausible, the bias
+terms are small, and the delayed-label rule withheld the right number of training examples.
+M0's MASE of 2.29 is the third independent confirmation of the prediction this task made in
+prose before any real data existed — 2.29 here, 2.14 on the single-year split, 1.87 on the
+fixture — and it is the strongest evidence so far that the replay clock is right.*
+
+***M2 does not clear M1, and that is what Gate B has to weigh.** The expert program beats raw
+values plus calendar under ridge and loses under LightGBM; the two predictors disagree about
+the sign, which is exactly the model-specificity check section 9.2 keeps two predictors for. A
+boosted tree given raw values and a clock recovers whatever the expert features encode. Since
+section 9.1 casts M2 as the human bar H1 must clear, a bar level with raw-plus-calendar makes
+clearing it mean little. Either hourly temperature is a task where feature engineering cannot
+matter much, or M2 is not yet a serious expert program — and neither is answerable by adding
+an LLM.*
+
+*The test fold is untouched, and these four tuned cells are optimistic on validation because
+their hyperparameters were chosen there. The comparison that decides H1 is a test-fold
+comparison after the protocol is frozen.)*
 
 ### Phase 7 — LLM proposal loop (effort weeks 9–11)
 
