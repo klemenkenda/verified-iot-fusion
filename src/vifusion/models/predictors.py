@@ -1,9 +1,21 @@
-"""The two predictors the vertical slice needs: identity, and ridge regression.
+"""The predictors of section 9.2: identity for the naive floor, ridge, and LightGBM.
 
-Section 9.2 fixes the main grid at two predictors — ridge as the linear reference and
-LightGBM as the nonlinear one. LightGBM arrives with the `ml` extra when the full Phase 6
-grid does; the slice of section 11.0 needs only a linear reference, and building it here
-without one keeps the dependency out of the tree until the phase that uses it.
+The main comparison grid is deliberately two predictors — ridge as the linear reference and
+LightGBM as the nonlinear one — because H1 needs to show that an effect is not model-specific
+and a third predictor adds cost rather than evidence.
+
+**LightGBM is pinned to a deterministic configuration.** Section 12 asks for byte-identical
+reruns, and a boosted-tree library is where that is easiest to lose: histogram construction is
+order-sensitive across threads, so the same data on the same machine can produce different
+trees run to run. :data:`DETERMINISTIC_SETTINGS` fixes ``num_threads=1``,
+``deterministic=True`` and ``force_row_wise=True`` and pins the seeds. That costs wall time
+and buys a rerun that reproduces, which is the trade this project has made everywhere else.
+
+**The two predictors treat a missing feature differently, and that is not a defect.** Ridge
+imputes the training mean; LightGBM learns a default direction for missingness at each split
+and is generally better for it. They are different models, and reporting both is the point —
+but it does mean a difference between them on a gappy stream may be about missing-value
+handling rather than about nonlinearity, which is worth remembering before attributing it.
 
 **Why ridge is written out rather than imported.** It is forty lines of normal equations, and
 writing them buys two things the project has already paid for elsewhere. Determinism: a BLAS
@@ -202,8 +214,109 @@ def _solve(matrix: list[list[float]], vector: list[float]) -> list[float]:
     return [augmented[index][size] for index in range(size)]
 
 
+DETERMINISTIC_SETTINGS: dict[str, Any] = {
+    "objective": "regression",
+    "verbosity": -1,
+    "num_threads": 1,
+    "deterministic": True,
+    "force_row_wise": True,
+    "seed": 20260910,
+    "bagging_seed": 20260910,
+    "feature_fraction_seed": 20260910,
+    "data_random_seed": 20260910,
+}
+"""What every LightGBM fit in this project sets, whatever else varies.
+
+Single-threaded and deterministic: with more than one thread, histogram construction depends
+on the order threads finish, so two runs on one machine can differ. Section 12's rerun
+requirement is not satisfiable otherwise, and a nondeterministic baseline would make every
+comparison against it approximate."""
+
+
+@dataclass
+class LightGbm:
+    """Gradient-boosted trees: the nonlinear reference of section 9.2.
+
+    Missing values are passed through rather than imputed. LightGBM sends them down a learned
+    default direction at each split, which is a better answer than the training mean and a
+    different one from ridge's — see the module docstring.
+    """
+
+    num_leaves: int = 7
+    min_data_in_leaf: int = 5
+    learning_rate: float = 0.05
+    rounds: int = 200
+    booster: Any = None
+
+    def fit(self, features: Sequence[Sequence[float | None]], targets: Sequence[float]) -> None:
+        import lightgbm
+
+        if not features:
+            raise PredictorError("lightgbm needs at least one training row")
+        if len(features) != len(targets):
+            raise PredictorError(f"{len(features)} rows against {len(targets)} targets")
+        dataset = lightgbm.Dataset(_matrix(features), label=list(targets), free_raw_data=False)
+        self.booster = lightgbm.train(
+            {
+                **DETERMINISTIC_SETTINGS,
+                "num_leaves": self.num_leaves,
+                "min_data_in_leaf": self.min_data_in_leaf,
+                "learning_rate": self.learning_rate,
+            },
+            dataset,
+            num_boost_round=self.rounds,
+        )
+
+    def predict(self, features: Sequence[Sequence[float | None]]) -> tuple[float, ...]:
+        if self.booster is None:
+            raise PredictorError("lightgbm was asked to predict before it was fitted")
+        predicted = self.booster.predict(_matrix(features))
+        return tuple(float(value) for value in predicted)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "num_leaves": self.num_leaves,
+            "min_data_in_leaf": self.min_data_in_leaf,
+            "learning_rate": self.learning_rate,
+            "rounds": self.rounds,
+            "settings": dict(DETERMINISTIC_SETTINGS),
+        }
+
+
+def _matrix(features: Sequence[Sequence[float | None]]) -> Any:
+    """Rows as a float array, with missing values as NaN for LightGBM to route."""
+    import numpy
+
+    return numpy.array(
+        [[float("nan") if value is None else float(value) for value in row] for row in features],
+        dtype=float,
+    )
+
+
+def available(name: str) -> bool:
+    """Whether a predictor can be constructed in this environment.
+
+    LightGBM lives in the ``ml`` extra, so a checkout installed without it can still run
+    every linear baseline. A method that asks for it and cannot have it is an error rather
+    than a silent substitution — a run that quietly swapped its predictor would produce
+    numbers under a name that does not describe them.
+    """
+    if name != "lightgbm":
+        return name in {"identity", "ridge"}
+    try:
+        import lightgbm  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def build(
-    name: str, *, feature_names: Sequence[str], output: str | None, penalty: float
+    name: str,
+    *,
+    feature_names: Sequence[str],
+    output: str | None,
+    penalty: float,
+    settings: dict[str, Any] | None = None,
 ) -> Predictor:
     """Construct the predictor a method declares."""
     if name == "identity":
@@ -217,4 +330,11 @@ def build(
         return Identity(column=list(feature_names).index(output), name=output)
     if name == "ridge":
         return Ridge(penalty=penalty)
-    raise PredictorError(f"unknown predictor {name!r}; available: identity, ridge")
+    if name == "lightgbm":
+        if not available("lightgbm"):
+            raise PredictorError(
+                "lightgbm is not installed; it lives in the 'ml' extra — run "
+                "`uv sync --extra ml`. A run must not silently substitute another predictor"
+            )
+        return LightGbm(**(settings or {}))
+    raise PredictorError(f"unknown predictor {name!r}; available: identity, ridge, lightgbm")

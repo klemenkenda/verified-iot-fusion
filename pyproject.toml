@@ -28,8 +28,10 @@ dependencies = [
 [project.optional-dependencies]
 # Phase 3 onwards: columnar transformation, analytical replay, compile-time units.
 data = ["polars>=1.0", "duckdb>=1.0"]
-# Phase 6 onwards: incremental models and the tabular baseline.
-ml = ["river>=0.21", "lightgbm>=4.5"]
+# Phase 6 onwards: incremental models and the tabular baseline. NumPy is declared rather
+# than inherited from LightGBM: vifusion.models.predictors imports it directly to build the
+# feature matrix, and this file's rule is that what is imported is declared.
+ml = ["river>=0.21", "lightgbm>=4.5", "numpy>=2.0"]
 
 [project.scripts]
 vifusion = "vifusion.cli:main"

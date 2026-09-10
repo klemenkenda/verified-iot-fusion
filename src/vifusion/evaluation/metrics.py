@@ -191,13 +191,13 @@ def render_table(rows: Sequence[tuple[str, Scores]], *, title: str = "") -> str:
     if title:
         lines.append(title)
     lines.append(
-        f"{'method':<10} {'n':>5} {'R2':>8} {'MAE':>10} {'RMSE':>10} {'MASE':>8} {'bias':>10}"
+        f"{'method':<18} {'n':>5} {'R2':>8} {'MAE':>10} {'RMSE':>10} {'MASE':>8} {'bias':>10}"
     )
     for name, scores in rows:
         mase = "—" if scores.mase is None else f"{scores.mase:.3f}"
         r2 = "—" if scores.r2 is None else f"{scores.r2:.4f}"
         lines.append(
-            f"{name:<10} {scores.count:>5} {r2:>8} {scores.mae:>10.4f} {scores.rmse:>10.4f} "
+            f"{name:<18} {scores.count:>5} {r2:>8} {scores.mae:>10.4f} {scores.rmse:>10.4f} "
             f"{mase:>8} {scores.bias:>10.4f}"
         )
     return "\n".join(lines)

@@ -23,6 +23,11 @@ prediction_interval: PT1H
 
 split: uscrn_primary
 
+# The downstream model grid of section 9.2: a linear reference and a nonlinear one, so that
+# H1 can say whether an effect is model-specific. Every method below runs under both, except
+# the naive floor, which returns a feature unchanged and is not a modelling choice.
+predictors: [ridge, lightgbm]
+
 # Methods, in the order the results table reports them. M4 is optional and M5 to M8 arrive
 # with the LLM loop; everything below is the non-LLM comparison the plan asks for.
 methods:
@@ -37,14 +42,12 @@ methods:
 
   - id: M1
     program: configs/programs/uscrn_m1_raw_calendar.yaml
-    predictor: ridge
     description: >-
       Raw current values plus calendar features. Separates the value of a fitted model from
       the value of engineered features, which is what M2's margin over it means.
 
   - id: M2
     program: configs/programs/uscrn_temperature.yaml
-    predictor: ridge
     description: >-
       Expert-engineered features after the iot-fusion vocabulary: windowed statistics,
       staleness, gap counts, and within-source fusion. The human bar H1 must clear.

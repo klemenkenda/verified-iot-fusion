@@ -84,7 +84,10 @@ class MethodSpec(_Strict):
     """Path to a feature program, relative to the repository root."""
 
     search: SearchSpec | None = None
-    predictor: str = "ridge"
+
+    predictor: str | None = None
+    """Fixes this method to one predictor. None means the task's whole predictor grid."""
+
     output: str | None = None
     """For the ``identity`` predictor: which output node *is* the prediction."""
 
@@ -101,6 +104,11 @@ class MethodSpec(_Strict):
             raise ValueError(
                 f"method {self.id!r} uses the identity predictor but names no output node; "
                 "an identity predictor returns one feature, so it must say which"
+            )
+        if self.output and self.predictor != "identity":
+            raise ValueError(
+                f"method {self.id!r} names an output node but does not use the identity "
+                "predictor; only that predictor returns one feature unchanged"
             )
         if self.search is not None and self.predictor == "identity":
             raise ValueError(
@@ -133,6 +141,13 @@ class TaskConfig(_Strict):
     split: str
     """Name of a frozen split in ``configs/splits``."""
 
+    predictors: tuple[str, ...] = ("ridge",)
+    """The downstream model grid every method is run under (section 9.2).
+
+    Two predictors, a linear and a nonlinear one, because H1 must show that an effect is not
+    model-specific. A method that names its own ``predictor`` — the naive floor, which returns
+    a feature unchanged — runs once instead, since a floor is not a modelling choice."""
+
     entities: tuple[str, ...] = ()
     methods: tuple[MethodSpec, ...] = ()
     rationale: str = ""
@@ -155,6 +170,10 @@ class TaskConfig(_Strict):
     @property
     def task_config_hash(self) -> str:
         return hash_object(self.model_dump(mode="json"))
+
+    def predictors_for(self, method: MethodSpec) -> tuple[str, ...]:
+        """The predictors one method is run under."""
+        return (method.predictor,) if method.predictor else self.predictors
 
     def method(self, method_id: str) -> MethodSpec:
         for method in self.methods:

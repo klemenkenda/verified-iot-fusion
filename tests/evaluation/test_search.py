@@ -300,7 +300,7 @@ def test_the_discovered_program_is_written_out(
     import yaml
 
     experiment.write_results(tmp_path, searched)
-    path = tmp_path / "discovered_M3.yaml"
+    path = tmp_path / "discovered_M3_ridge.yaml"
     assert path.exists()
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     result = next(item for item in searched.results if item.method_id == "M3")

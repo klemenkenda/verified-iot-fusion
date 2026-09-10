@@ -369,7 +369,9 @@ def _unit_lookup(root: Path) -> dict[tuple[str, ...], str]:
     return lookup
 
 
-def _unit_ids(root: Path, entities: Sequence[str] | None, unit_lookup: dict[tuple[str, ...], str]) -> tuple[str, ...]:
+def _unit_ids(
+    root: Path, entities: Sequence[str] | None, unit_lookup: dict[tuple[str, ...], str]
+) -> tuple[str, ...]:
     if entities is not None:
         return tuple(str(entity) for entity in entities)
     if not unit_lookup:

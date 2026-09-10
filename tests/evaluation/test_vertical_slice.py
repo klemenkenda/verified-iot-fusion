@@ -168,10 +168,16 @@ def test_the_run_writes_a_manifest_and_a_generated_table(
     assert written.split_manifest_hash == result.split_manifest_hash
     assert written.task_config_hash == result.task_config_hash
     assert written.raw_data_hashes == result.raw_data_hashes
-    assert set(written.metrics) == {"M0", "M1", "M2", "M3", "M3r"}
+    assert set(written.metrics) == {
+        "M0/identity",
+        "M1/ridge",
+        "M2/ridge",
+        "M3/ridge",
+        "M3r/ridge",
+    }
     # Every method's program hash is recoverable from the manifest, not just their union.
     for item in result.results:
-        assert f"{item.method_id}={item.program_hash}" in (written.feature_program_hash or "")
+        assert f"{result.cell(item)}={item.program_hash}" in (written.feature_program_hash or "")
 
 
 def test_the_manifest_names_the_availability_model_the_data_actually_used(

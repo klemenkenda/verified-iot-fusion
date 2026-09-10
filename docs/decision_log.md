@@ -1009,3 +1009,43 @@ freeze and expensive after it.
   have found it — the automated baseline exercised the engine in a way the expert program did
   not, which is an argument for having built it properly.
 - **Phase / gate:** Phase 6
+
+### 2026-09-10 — LightGBM is the nonlinear reference, pinned to a deterministic configuration
+
+- **Decision:** LightGBM 4.7 joins ridge as the second half of section 9.2's predictor grid,
+  installed through the existing `ml` extra. Every method now runs under both predictors, and
+  a results row is named for the cell it is — `M2/ridge`, `M2/lightgbm` — rather than for the
+  method alone. The naive floor is the exception: it fixes its own `identity` predictor,
+  because returning a feature unchanged is not a modelling choice.
+- **Rationale:** H1 claims that verified features improve forecasting, and section 9.2 keeps
+  two predictors precisely so that the claim can be checked against *model-specificity*. A
+  table whose rows are named by method alone cannot answer that question, which is why the
+  naming changed with the grid.
+- **Determinism is pinned rather than hoped for.** `DETERMINISTIC_SETTINGS` fixes
+  `num_threads=1`, `deterministic=True`, `force_row_wise=True` and every seed. Histogram
+  construction is order-sensitive across threads, so a multi-threaded fit can differ run to
+  run on one machine, and section 12's byte-identical rerun would be unsatisfiable. The cost
+  is wall time; the same trade has been made everywhere else in this project. Both the effect
+  and the settings are asserted, because a fast machine that happens not to race would pass an
+  effect-only test.
+- **The two predictors handle missing features differently, and it is documented rather than
+  hidden:** ridge imputes the training mean, LightGBM learns a default direction per split.
+  That is a real difference between the model classes, and it means a gap between them on a
+  gappy stream may be about missingness rather than about nonlinearity — worth remembering
+  before attributing it.
+- **Tuning budget: four capacity settings**, chosen on validation, deliberately the same order
+  as ridge's five so that neither predictor is tuned harder than the other. What varies is
+  capacity — `num_leaves` and `min_data_in_leaf` — because on these row counts that is what
+  decides whether the model finds structure or memorises the training fold.
+- **A search runs once per predictor.** The features that help a linear model are not the ones
+  that help a tree, so M3 searches separately for each cell and each spends its own budget.
+  This doubles M3's cost and is the only honest arrangement: selecting under one model and
+  reporting under another measures the mismatch rather than the search.
+- **A missing predictor is an error, never a substitution.** `predictors.available` gates the
+  run, and a task asking for LightGBM in an environment without the `ml` extra fails loudly —
+  a run that quietly swapped its predictor would publish numbers under a name that does not
+  describe them.
+- **Dependency note:** NumPy is now declared explicitly in the `ml` extra rather than
+  inherited from LightGBM, because `models/predictors.py` imports it directly to build the
+  feature matrix and this repository's rule is that what is imported is declared.
+- **Phase / gate:** Phase 6

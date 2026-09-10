@@ -943,6 +943,7 @@ data = [
 ]
 ml = [
     { name = "lightgbm" },
+    { name = "numpy" },
     { name = "river" },
 ]
 
@@ -959,6 +960,7 @@ dev = [
 requires-dist = [
     { name = "duckdb", marker = "extra == 'data'", specifier = ">=1.0" },
     { name = "lightgbm", marker = "extra == 'ml'", specifier = ">=4.5" },
+    { name = "numpy", marker = "extra == 'ml'", specifier = ">=2.0" },
     { name = "pint", specifier = ">=0.24" },
     { name = "polars", marker = "extra == 'data'", specifier = ">=1.0" },
     { name = "pydantic", specifier = ">=2.9" },

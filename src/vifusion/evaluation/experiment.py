@@ -75,6 +75,21 @@ The chosen value is recorded per method in the results, because a penalty select
 validation is a decision made on data, and a decision made on data belongs in the manifest."""
 
 
+LIGHTGBM_GRID: tuple[dict[str, Any], ...] = (
+    {"num_leaves": 7, "min_data_in_leaf": 5, "learning_rate": 0.05, "rounds": 200},
+    {"num_leaves": 7, "min_data_in_leaf": 20, "learning_rate": 0.05, "rounds": 200},
+    {"num_leaves": 31, "min_data_in_leaf": 20, "learning_rate": 0.05, "rounds": 200},
+    {"num_leaves": 31, "min_data_in_leaf": 20, "learning_rate": 0.10, "rounds": 200},
+)
+"""The nonlinear predictor's frozen tuning budget: four fits per method.
+
+Deliberately the same order of magnitude as the ridge grid's five, so neither predictor is
+handed a larger hyperparameter budget than the other — that would make a difference between
+them a difference in tuning rather than in model class. Capacity (``num_leaves``,
+``min_data_in_leaf``) is what varies, because on the row counts these tasks produce that is
+what decides whether the model fits structure or memorises the training fold."""
+
+
 def budget_for(candidate_count: int, max_features: int, *, round_to: int = 500) -> int:
     """The candidate-evaluation budget a task should declare (decided 2026-09-10).
 
@@ -112,6 +127,9 @@ class MethodResult:
     penalty: float | None = None
     """The ridge penalty chosen from the declared grid, or None for an unfitted predictor."""
 
+    model_settings: dict[str, Any] | None = None
+    """The nonlinear predictor's chosen hyperparameters, when there are any."""
+
     tuned_on: str = ""
     """The fold the penalty was chosen on. Scoring on it is, to that extent, in-sample."""
 
@@ -147,6 +165,7 @@ class MethodResult:
             "test_examples": self.test_examples,
             "scored_on": self.scored_on,
             "penalty": self.penalty,
+            "model_settings": self.model_settings,
             "tuned_on": self.tuned_on,
             "scores": self.scores.as_dict(),
             "search": None if self.search is None else self.search.as_dict(),
@@ -186,16 +205,25 @@ class ExperimentResult:
             "results": [result.as_dict() for result in self.results],
         }
 
+    def cell(self, result: MethodResult) -> str:
+        """How a row is named: the method, and the predictor it ran under.
+
+        Both, always, even when the grid has one predictor. A table whose rows are named by
+        method alone cannot say whether an effect is model-specific, which is the question
+        section 9.2 keeps two predictors in order to answer.
+        """
+        return f"{result.method_id}/{result.predictor}"
+
     def table(self) -> str:
         text = metrics.render_table(
-            [(result.method_id, result.scores) for result in self.results],
+            [(self.cell(result), result.scores) for result in self.results],
             title=f"{self.task} — {self.dataset} {self.fold} fold",
         )
         # A searching method scored on the fold it selected on is reporting an in-sample
         # number. Section 9.3 designates validation for feature search, so this is the normal
         # state of affairs during development and a trap at reporting time — the table says so
         # rather than leaving it to be remembered.
-        in_sample = [item.method_id for item in self.results if item.selected_in_sample]
+        in_sample = [self.cell(item) for item in self.results if item.selected_in_sample]
         if in_sample:
             text += (
                 f"\n\nNOTE: {', '.join(in_sample)} selected features on this same fold; "
@@ -251,6 +279,7 @@ def run_method(
     fold: Fold,
     entities: Sequence[str],
     *,
+    predictor_name: str = "ridge",
     penalty: float = DEFAULT_RIDGE_PENALTY,
     report: SearchReport | None = None,
     program: dict[str, Any] | None = None,
@@ -286,17 +315,26 @@ def run_method(
 
     names = usable[0].feature_names
     chosen_penalty: float | None = None
+    settings: dict[str, Any] | None = None
     tuned_on = ""
-    if method.predictor == "ridge":
+    if predictor_name in {"ridge", "lightgbm"}:
         tuning = examples_for(
             plan, bundle, task, _requests(split, "validation", task, train_entities)
         )
-        chosen_penalty = _tune_penalty(usable, tuning) if tuning else penalty
-        tuned_on = "validation" if tuning else ""
-        penalty = chosen_penalty
+        if tuning:
+            tuned_on = "validation"
+            if predictor_name == "ridge":
+                chosen_penalty = _tune_penalty(usable, tuning)
+                penalty = chosen_penalty
+            else:
+                settings = _tune_lightgbm(usable, tuning)
 
     model = predictors.build(
-        method.predictor, feature_names=names, output=method.output, penalty=penalty
+        predictor_name,
+        feature_names=names,
+        output=method.output,
+        penalty=penalty,
+        settings=settings,
     )
     model.fit(
         [example.features for example in usable], [example.target_value for example in usable]
@@ -307,7 +345,7 @@ def run_method(
 
     return MethodResult(
         method_id=method.id,
-        predictor=method.predictor,
+        predictor=predictor_name,
         program_hash=program_hash,
         feature_names=names,
         train_examples=len(usable),
@@ -315,6 +353,7 @@ def run_method(
         test_examples=len(scoring),
         scored_on=fold,
         penalty=chosen_penalty,
+        model_settings=settings,
         tuned_on=tuned_on,
         search=report,
         program=program,
@@ -350,6 +389,23 @@ def _tune_penalty(training: Sequence[Example], validation: Sequence[Example]) ->
     return best
 
 
+def _tune_lightgbm(training: Sequence[Example], validation: Sequence[Example]) -> dict[str, Any]:
+    """Choose LightGBM's capacity from the declared grid by validation error."""
+    best = dict(LIGHTGBM_GRID[0])
+    best_error = float("inf")
+    for candidate in LIGHTGBM_GRID:
+        model = predictors.LightGbm(**candidate)
+        model.fit(
+            [example.features for example in training],
+            [example.target_value for example in training],
+        )
+        predicted = model.predict([example.features for example in validation])
+        error = metrics.score([example.target_value for example in validation], list(predicted)).mae
+        if error < best_error:
+            best, best_error = dict(candidate), error
+    return best
+
+
 def _naive_scales(examples: Sequence[Example]) -> dict[str, float] | None:
     """One naive-forecast scale per entity, from that entity's own training targets.
 
@@ -374,7 +430,10 @@ def _naive_scales(examples: Sequence[Example]) -> dict[str, float] | None:
 
 
 def _selection_score(
-    training: Sequence[Example], validation: Sequence[Example], penalty: float
+    training: Sequence[Example],
+    validation: Sequence[Example],
+    penalty: float,
+    predictor_name: str = "ridge",
 ) -> search.Score:
     """A loss for one feature subset: fit on the training rows, score on the selection rows.
 
@@ -390,7 +449,15 @@ def _selection_score(
             return float("inf")
         fitting = with_features(training, names)
         scoring = with_features(validation, names)
-        model = predictors.Ridge(penalty=penalty)
+        # The same model class the features will finally be scored under: a feature set that
+        # helps a linear model is not the same as one that helps a tree, and selecting under
+        # one to report under the other would measure the mismatch rather than the search.
+        model = predictors.build(
+            predictor_name,
+            feature_names=names,
+            output=None,
+            penalty=penalty,
+        )
         model.fit(
             [example.features for example in fitting],
             [example.target_value for example in fitting],
@@ -408,6 +475,7 @@ def run_search(
     split: SplitManifest,
     entities: Sequence[str],
     *,
+    predictor_name: str = "ridge",
     penalty: float = DEFAULT_RIDGE_PENALTY,
 ) -> tuple[ExecutionPlan, str, SearchReport, dict[str, Any]]:
     """Find a feature program by search, and return it compiled.
@@ -463,7 +531,7 @@ def run_search(
     )
     report = search.search(
         accepted,
-        _selection_score(training, validation, penalty),
+        _selection_score(training, validation, penalty, predictor_name),
         budget,
         selected_on="validation",
         proposed=len(proposed),
@@ -516,29 +584,44 @@ def run_task(
     card = cards.build(bundle, license=adapter.license, homepage=adapter.homepage)
     results = []
     for method in task.methods:
-        report: SearchReport | None = None
-        document: dict[str, Any] | None = None
-        if method.search is not None:
-            plan, program_hash, report, document = run_search(
-                method, bundle, task, split, entities, penalty=penalty
+        for predictor_name in task.predictors_for(method):
+            if not predictors.available(predictor_name):
+                raise TaskError(
+                    f"method {method.id} asks for the {predictor_name!r} predictor, which is "
+                    "not installed; a run must not silently substitute another"
+                )
+            report: SearchReport | None = None
+            document: dict[str, Any] | None = None
+            if method.search is not None:
+                # Searched separately per predictor: the features that help a linear model
+                # are not the ones that help a tree, and each cell spends its own budget.
+                plan, program_hash, report, document = run_search(
+                    method,
+                    bundle,
+                    task,
+                    split,
+                    entities,
+                    predictor_name=predictor_name,
+                    penalty=penalty,
+                )
+            else:
+                plan, program_hash = compile_method(method, repo_root)
+            results.append(
+                run_method(
+                    method,
+                    plan,
+                    program_hash,
+                    bundle,
+                    task,
+                    split,
+                    fold,
+                    entities,
+                    predictor_name=predictor_name,
+                    penalty=penalty,
+                    report=report,
+                    program=document,
+                )
             )
-        else:
-            plan, program_hash = compile_method(method, repo_root)
-        results.append(
-            run_method(
-                method,
-                plan,
-                program_hash,
-                bundle,
-                task,
-                split,
-                fold,
-                entities,
-                penalty=penalty,
-                report=report,
-                program=document,
-            )
-        )
 
     return ExperimentResult(
         task=task.name,
@@ -592,7 +675,7 @@ def write_results(
     for item in result.results:
         if item.program is None:
             continue
-        path = output_dir / f"discovered_{item.method_id}.yaml"
+        path = output_dir / f"discovered_{item.method_id}_{item.predictor}.yaml"
         path.write_text(
             yaml.safe_dump(item.program, sort_keys=False), encoding="utf-8", newline="\n"
         )
@@ -621,11 +704,11 @@ def write_results(
         # needs that method's program hash, and a hash of all of them identifies the set
         # without identifying any member of it.
         feature_program_hash=";".join(
-            f"{item.method_id}={item.program_hash}" for item in result.results
+            f"{result.cell(item)}={item.program_hash}" for item in result.results
         ),
         model_seed=model_seed,
         hardware=hardware(),
-        metrics={item.method_id: item.scores.as_dict() for item in result.results},
+        metrics={result.cell(item): item.scores.as_dict() for item in result.results},
         artifacts=[
             _artifact(table_path),
             _artifact(scores_path),
