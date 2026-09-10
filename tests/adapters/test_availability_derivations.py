@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 
 from tests.adapters.conftest import ALL_BUNDLES, read_beijing
-from vifusion.adapters import beijing, uscrn
+from vifusion.adapters import beijing, enefit, uscrn
 from vifusion.adapters.base import AdapterError, DatasetBundle, derivation_of, has_derivation
 from vifusion.temporal.availability import unsupported
 from vifusion.temporal.records import CanonicalRecord, RecordKind
@@ -104,14 +104,50 @@ def test_enefit_availability_is_recorded_and_names_its_block(enefit_bundle: Data
 def test_enefit_records_in_one_block_are_available_together(
     enefit_bundle: DatasetBundle,
 ) -> None:
-    """``data_block_id`` means delivered together, and the adapter must not blur that."""
+    """``data_block_id`` means delivered together, and the adapter must not blur that.
+
+    Grouped by the *revealing* block rather than the filed one, because those differ for the
+    target — see :func:`test_an_enefit_target_is_available_when_it_was_revealed`.
+    """
     by_block: dict[int, set[str]] = {}
     for record in enefit_bundle.records:
-        block = int(record.provenance["data_block_id"])
+        block = int(record.provenance["revealing_block_id"])
         by_block.setdefault(block, set()).add(record.available_time.isoformat())
     assert by_block
     for block, moments in by_block.items():
         assert len(moments) == 1, f"block {block} was released at {sorted(moments)}"
+
+
+def test_an_enefit_target_is_available_when_it_was_revealed_not_when_it_was_asked_for(
+    enefit_bundle: DatasetBundle,
+) -> None:
+    """The leak that only real data exposed.
+
+    A target row's ``data_block_id`` names the block that *asked* for that day's prediction;
+    the competition hands the actual values back two blocks later as ``revealed_targets``.
+    Dating a label by its own block therefore makes it available before the hour it
+    describes has happened — on the real ``train.csv`` the very first record fails the
+    canonical record's own check, which is how this was found. The fixture reproduces the
+    relation so that the check does not depend on data nobody may commit.
+    """
+    labels = [r for r in enefit_bundle.records if r.source_id == enefit.TARGET_SOURCE_ID]
+    assert labels
+    for record in labels:
+        filed = int(record.provenance["data_block_id"])
+        revealing = int(record.provenance["revealing_block_id"])
+        assert revealing == filed + enefit.LABEL_REVELATION_LAG_BLOCKS
+        assert record.available_time > record.event_time
+        assert "blocks after" in derivation_of(record).rule
+
+
+def test_only_the_enefit_target_carries_a_revelation_lag() -> None:
+    """Everything else the competition hands over directly, and a lag there would be a delay
+    invented rather than recorded."""
+    for source in enefit.SOURCES:
+        expected = (
+            enefit.LABEL_REVELATION_LAG_BLOCKS if source.source_id == enefit.TARGET_SOURCE_ID else 0
+        )
+        assert source.revelation_lag_blocks == expected, source.filename
 
 
 def test_beijing_is_simulated_and_names_its_scenario(beijing_bundle: DatasetBundle) -> None:
@@ -166,3 +202,37 @@ def test_a_record_without_a_derivation_is_refused_on_read() -> None:
     assert not has_derivation(record)
     with pytest.raises(AdapterError, match="no availability derivation"):
         derivation_of(record)
+
+
+# --- reading a slice of a real archive ------------------------------------------------------
+
+
+def test_a_station_filter_narrows_the_entities_without_touching_the_clock() -> None:
+    """Scope, not time: selecting stations may change who exists, never what was knowable.
+
+    The filter is not a convenience. A year of the real hourly archive carries about a
+    hundred and fifty stations across nearly nine thousand files, and every station is an
+    entity whose records are held in memory — without this, the adapter cannot read the
+    archive it was written for at all.
+    """
+    from tests.adapters.conftest import USCRN_ROOT
+
+    whole = uscrn.read_updates(USCRN_ROOT / "updates", root=USCRN_ROOT)
+    sliced = uscrn.read_updates(USCRN_ROOT / "updates", root=USCRN_ROOT, stations=["94074"])
+
+    assert {record.entity_id for record in whole.records} == {"53131", "94074"}
+    assert {record.entity_id for record in sliced.records} == {"94074"}
+
+    kept = {record.record_id: record for record in whole.records if record.entity_id == "94074"}
+    assert kept, "the fixture must carry the station this test slices to"
+    for record in sliced.records:
+        assert record.available_time == kept[record.record_id].available_time
+    assert any("stations: ['94074']" in note for note in sliced.notes)
+
+
+def test_a_station_that_is_in_no_file_is_an_error_not_an_empty_bundle() -> None:
+    """A mistyped WBANNO would otherwise publish a smaller slice under a name for it."""
+    from tests.adapters.conftest import USCRN_ROOT
+
+    with pytest.raises(AdapterError, match="appear in no update file"):
+        uscrn.read_updates(USCRN_ROOT / "updates", root=USCRN_ROOT, stations=["94074", "00000"])

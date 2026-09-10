@@ -18,6 +18,68 @@ data/
 └── prepared/    regenerated from raw by adapter scripts
 ```
 
+## Getting the data
+
+One command on a fresh machine:
+
+```bash
+uv run python tools/fetch_datasets.py
+```
+
+That fetches all three into the layout below -- roughly 2.5 GB, most of it USCRN. Everything
+is resumable and additive: files already present are left alone, so an interrupted fetch is
+finished by running the same command again. Each dataset also has its own script if you want
+just one.
+
+| Tool | Fetches | Needs an account |
+| --- | --- | --- |
+| `tools/fetch_datasets.py` | all three, in sequence | only for Enefit |
+| `tools/fetch_uscrn.py` | hourly update archive + yearly targets | no |
+| `tools/fetch_beijing.py` | the twelve station files from UCI | no |
+| `tools/fetch_enefit.py` | the Kaggle competition data | yes |
+
+Useful variations:
+
+```bash
+uv run python tools/fetch_datasets.py --only uscrn beijing      # skip the one needing Kaggle
+uv run python tools/fetch_datasets.py --uscrn-years 2021 2022 2023
+uv run python tools/fetch_datasets.py --kaggle-config-dir .kaggle
+uv run python tools/fetch_uscrn.py --years 2022 --workers 4     # gentler on the archive
+```
+
+**Two things the tools cannot do for you.**
+
+*Accept the Enefit competition rules*, once, in a browser, and create a Kaggle API token.
+`tools/fetch_enefit.py` checks for both and explains what is missing rather than failing with
+a stack trace. Nothing else needs an account.
+
+*Decide what the timestamps mean.* Downloading a dataset does not tell you when its records
+became available, and for two of the three that has to be **declared** rather than discovered.
+Read [docs/datasets.md](../docs/datasets.md) before generating a card -- it is the operating
+manual, and it names, per dataset, the one thing about timing that is a choice.
+
+**How far back USCRN goes.** The hourly update archive begins on **2020-10-06 20:00 UTC**;
+there is no 2019 directory. Earlier years exist only as quality-controlled yearly products,
+and a yearly product records no delivery time -- so nothing before that instant can be
+replayed with availability at all. This is a hard bound on every split this repository can
+honestly run. Each year is about 8,760 files and 357 MB, because availability is reconstructed
+from one file per dissemination window.
+
+## Checking what you downloaded
+
+`vifusion dataset-card` validates the read, hashes the bytes, and reports the availability
+model of every record. It exits non-zero when the read is unsound -- a naive timestamp, an
+identifier naming two different records, a record with no availability derivation. Run it once
+per dataset after fetching:
+
+```bash
+uv run vifusion dataset-card uscrn --root data/raw/uscrn --option stations=94075 \
+    --option final=final/CRNH0203-2023-CO_Boulder_14_W.txt --output artifacts/cards/uscrn.json
+```
+
+The commands for the other two, and the options each one requires, are in
+[docs/datasets.md](../docs/datasets.md).
+
 ## Expected datasets
 
 Roles and commitments are defined in section 8 of the plan.

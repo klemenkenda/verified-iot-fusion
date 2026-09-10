@@ -35,7 +35,10 @@ rationale: >-
   periods so that the evaluation is forward in time, as a deployed system would be.
 
 notes:
-  - "Prediction unit identifiers must be confirmed against the competition data before the
-     final sweep; the two here are placeholders chosen for shape."
+  - "Prediction unit identifiers confirmed 2026-09-10 against train.csv, which carries 69
+     units numbered 0 to 68; the held-out units 9 and 15 exist."
+  - "Weather is not yet readable per prosumer -- 112 grid points collapse onto one stream per
+     unit -- so a run under this split must exclude the two weather files until the declared
+     entity graph of section 5.3 exists. See docs/decision_log.md."
   - "Consumption and production are separate targets, target_consumption and
      target_production, and are scored separately."

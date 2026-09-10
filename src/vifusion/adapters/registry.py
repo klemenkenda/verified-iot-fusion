@@ -91,20 +91,20 @@ def _read_uscrn(root: Path, options: Mapping[str, str]) -> DatasetBundle:
         root=root,
         as_of=_time(options, "as_of"),
         features=_list(options, "features"),
+        stations=_list(options, "stations"),
     )
-    final = options.get("final")
-    if final is None:
+    # One file per year, so a split covering more than one year needs more than one. Comma
+    # separated rather than repeated, matching every other list option here. A multi-year run
+    # whose targets stopped at a year boundary would not fail -- it would quietly score
+    # nothing after that date, which is the kind of silence this repository exists to avoid.
+    finals = _list(options, "final")
+    if not finals:
         return updates
-    return merge(
-        updates,
-        uscrn.read_final(
-            root / final,
-            root=root,
-            publication_delay=_duration(
-                options, "publication_delay", uscrn.DEFAULT_FINAL_PUBLICATION_DELAY
-            ),
-        ),
-    )
+    delay = _duration(options, "publication_delay", uscrn.DEFAULT_FINAL_PUBLICATION_DELAY)
+    bundle = updates
+    for name in finals:
+        bundle = merge(bundle, uscrn.read_final(root / name, root=root, publication_delay=delay))
+    return bundle
 
 
 def _read_enefit(root: Path, options: Mapping[str, str]) -> DatasetBundle:
@@ -120,6 +120,7 @@ def _read_enefit(root: Path, options: Mapping[str, str]) -> DatasetBundle:
         schedule=schedule,
         entities=_list(options, "entities"),
         broadcast=_flag(options, "broadcast", True),
+        sources=_list(options, "sources"),
     )
 
 
@@ -140,13 +141,25 @@ ADAPTERS: dict[str, DatasetAdapter] = {
         license=uscrn.LICENSE,
         homepage=uscrn.HOMEPAGE,
         reader=_read_uscrn,
-        optional_options=("updates", "final", "as_of", "publication_delay", "features"),
+        optional_options=(
+            "updates",
+            "final",
+            "as_of",
+            "publication_delay",
+            "features",
+            "stations",
+        ),
         option_help={
             "updates": "subdirectory of the update archive, default 'updates'",
-            "final": "path to a quality-controlled file, read as targets only",
+            "final": (
+                "comma-separated paths to quality-controlled files, read as targets only; "
+                "the product is published one file per year, so a split spanning years needs "
+                "one per year"
+            ),
             "as_of": "read the archive as a reader holding it at this instant would have",
             "publication_delay": "declared lag before a final value is published, e.g. 30d",
             "features": "comma-separated hourly02 columns to expose",
+            "stations": "comma-separated WBANNO identifiers; default every station present",
         },
     ),
     "enefit": DatasetAdapter(
@@ -156,7 +169,7 @@ ADAPTERS: dict[str, DatasetAdapter] = {
         homepage=enefit.HOMEPAGE,
         reader=_read_enefit,
         required_options=("first_block_id", "first_release"),
-        optional_options=("block_interval", "entities", "broadcast"),
+        optional_options=("block_interval", "entities", "broadcast", "sources"),
         option_help={
             "first_block_id": (
                 "the earliest data_block_id in the slice; the file records which rows were "
@@ -167,6 +180,11 @@ ADAPTERS: dict[str, DatasetAdapter] = {
             "block_interval": "spacing between block releases, default 1d",
             "entities": "comma-separated prediction_unit_id values",
             "broadcast": "replicate global streams into each unit, default true",
+            "sources": (
+                "comma-separated source ids to read, default every file present; the two "
+                "weather sources are not yet readable per prosumer and are expensive, so a "
+                "usable slice names the others"
+            ),
         },
     ),
     "beijing": DatasetAdapter(

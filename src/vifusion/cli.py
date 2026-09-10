@@ -36,6 +36,12 @@ EXIT_INVALID_DATA = 4
 """A dataset could not be read, or was read and found unsound. Distinct from a bad program:
 Phase 5 separates a defect in the data from a defect in what was asked of it."""
 
+DEFAULT_REPLAY_LIMIT = 24
+"""Prediction times ``dataset-replay`` explains unless told otherwise.
+
+One day of hourly requests: enough to see a full diurnal cycle of eligibility decisions, few
+enough that the output is read rather than scrolled past."""
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="vifusion", description=__doc__.splitlines()[0])
@@ -114,6 +120,25 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     dataset_replay.add_argument(
         "--every", default="1h", help="spacing of prediction requests, e.g. 30m"
+    )
+    dataset_replay.add_argument(
+        "--from",
+        dest="start",
+        default=None,
+        help=(
+            "first prediction time; defaults to the earliest arrival in the dataset. A real "
+            "archive spans a year, so this is normally worth setting"
+        ),
+    )
+    dataset_replay.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_REPLAY_LIMIT,
+        help=(
+            f"how many prediction times to explain, default {DEFAULT_REPLAY_LIMIT}; 0 removes "
+            "the cap, which on a real archive means auditing every request against the whole "
+            "log and printing one block per request"
+        ),
     )
     dataset_replay.add_argument(
         "--as-of",
@@ -423,11 +448,25 @@ def _dataset_replay(args: argparse.Namespace) -> int:
     every = parse_duration(args.every)
     first = min(record.available_time for record in for_entity)
     last = max(record.available_time for record in for_entity)
+    if args.start is not None:
+        first = datetime.fromisoformat(args.start)
+        if first.tzinfo is None:
+            print("--from must carry a timezone, for example a trailing Z", file=sys.stderr)
+            return EXIT_INVALID_DATA
+    # Bounded on purpose. This command explains *every* eligibility decision it makes, and the
+    # audit reads the whole log once per request, so an unbounded run over a real archive is
+    # both quadratic and unreadable: a year of one USCRN station is 8,757 requests against
+    # 52,542 records, and 8,757 printed audit blocks. The cap is what makes it a tool for
+    # understanding a replay rather than an attempt to narrate one.
+    limit = args.limit if args.limit and args.limit > 0 else None
     requests: list[PredictionRequest] = []
     moment = first
-    while moment <= last:
+    while moment <= last and (limit is None or len(requests) < limit):
         requests.append(PredictionRequest(entity, moment))
         moment += every
+    if not requests:
+        print(f"no prediction times at or after {first.isoformat()}", file=sys.stderr)
+        return EXIT_INVALID_DATA
 
     audit_log: list[CanonicalRecord]
     if args.as_of is None:
@@ -452,6 +491,11 @@ def _dataset_replay(args: argparse.Namespace) -> int:
     audits = [replay_audit.audit_vector(compiled.plan, audit_log, vector) for vector in vectors]
     for audit in audits:
         print(replay_audit.render(audit))
+    if limit is not None and moment <= last:
+        print(
+            f"\n{len(requests)} of the prediction times from {first.isoformat()} to "
+            f"{last.isoformat()} were explained; raise --limit or move --from for the rest"
+        )
     if outcome is not None:
         print()
         print(f"late records       {len(outcome.late_record_ids)} under policy {args.late_policy}")

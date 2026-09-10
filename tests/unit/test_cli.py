@@ -148,6 +148,79 @@ def test_dataset_replay_explains_every_eligibility_decision(
     assert "staggered" in out
 
 
+def test_dataset_replay_explains_a_bounded_number_of_prediction_times(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The audit reads the whole log once per request, so an unbounded run is quadratic.
+
+    On a real archive that is not a slow command but an unusable one: a year of one USCRN
+    station is 8,757 requests against 52,542 records, and 8,757 printed audit blocks. The cap
+    is what keeps this a tool for understanding a replay.
+    """
+    status = main(
+        [
+            "dataset-replay",
+            "beijing",
+            "--root",
+            str(DATASETS / "beijing"),
+            "--program",
+            str(PROGRAMS / "beijing_pm25.yaml"),
+            "--option",
+            "arrival=staggered",
+            "--limit",
+            "2",
+        ]
+    )
+    assert status == EXIT_OK
+    out = capsys.readouterr().out
+    assert out.count("availability rules") == 2
+    assert "were explained; raise --limit" in out
+
+
+def test_dataset_replay_starts_where_it_is_told_to(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A year-long archive is worth entering somewhere other than its first instant."""
+    status = main(
+        [
+            "dataset-replay",
+            "beijing",
+            "--root",
+            str(DATASETS / "beijing"),
+            "--program",
+            str(PROGRAMS / "beijing_pm25.yaml"),
+            "--option",
+            "arrival=staggered",
+            "--from",
+            "2013-03-01T12:00:00Z",
+            "--limit",
+            "1",
+        ]
+    )
+    assert status == EXIT_OK
+    assert "2013-03-01T12:00:00+00:00" in capsys.readouterr().out
+
+
+def test_dataset_replay_refuses_a_naive_start(capsys: pytest.CaptureFixture[str]) -> None:
+    """Same rule as everywhere else: a naive instant adopts the reader's zone silently."""
+    status = main(
+        [
+            "dataset-replay",
+            "beijing",
+            "--root",
+            str(DATASETS / "beijing"),
+            "--program",
+            str(PROGRAMS / "beijing_pm25.yaml"),
+            "--option",
+            "arrival=staggered",
+            "--from",
+            "2013-03-01T12:00:00",
+        ]
+    )
+    assert status == EXIT_INVALID_DATA
+    assert "must carry a timezone" in capsys.readouterr().err
+
+
 def test_dataset_replay_applies_a_late_policy(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

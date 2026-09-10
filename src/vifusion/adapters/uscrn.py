@@ -91,6 +91,16 @@ UTC_TIME_COLUMN = 3
 DISSEMINATION_WINDOW = timedelta(hours=1)
 """Span an update file covers. Its close is the availability bound."""
 
+EMPTY_WINDOWS_ARE_DATA = True
+"""A window in which nothing was disseminated is a fact, not a damaged file.
+
+251 of the 22,439 update files of 2020 to 2023 carry a bulletin envelope and no data rows at
+all — a little over one per cent of hours in which the archive delivered nothing. Such a file
+contributes no records and no error: the gap it represents is exactly what ``staleness`` and
+``missing_count`` exist to see, and refusing to read the archive because an hour was empty
+would discard the phenomenon this dataset was chosen for. A file that is malformed in any
+other way is still rejected by the row-width check."""
+
 DEFAULT_FINAL_PUBLICATION_DELAY = timedelta(days=30)
 """Declared lag from observation to quality-controlled publication.
 
@@ -251,7 +261,7 @@ must line up three-in-a-row the way the header is."""
 
 
 def _envelope_line_numbers(numbered: Sequence[tuple[int, str]]) -> frozenset[int]:
-    """Line numbers of the NOAAPort/WMO bulletin envelope opening ``numbered``, if present.
+    """Line numbers of the NOAAPort/WMO bulletin envelopes opening ``numbered``, if present.
 
     Update files are archived exactly as broadcast — readme.txt section 4.C: "broadcast over
     NOAAPort (SXXX91 CRNH02)" — so what NCEI hands out is the raw GTS bulletin: a
@@ -259,21 +269,32 @@ def _envelope_line_numbers(numbered: Sequence[tuple[int, str]]) -> frozenset[int
     of the fixed-width data rows. GTS bulletins terminate lines with CRCRLF, which Python's
     universal-newline translation turns into a spurious blank line per terminator; ``numbered``
     is expected to already have blank lines filtered out so that artefact cannot shift which
-    physical lines this checks. Hand-built fixtures carry no envelope at all; requiring all
-    three to match before naming any of them means a fixture is simply left alone, and anything
-    that only partly looks like an envelope still falls through to the row-width check below
-    and is rejected loudly rather than silently misread.
+    physical lines this checks.
+
+    **All three lines or none.** Hand-built fixtures carry no envelope at all, so requiring a
+    complete match before naming any line means a fixture is simply left alone; anything that
+    only partly looks like an envelope falls through to the row-width check and is rejected
+    loudly rather than silently misread. That rule is the safety property here and is kept.
+
+    **A file may carry more than one envelope, and they are always a prefix.** Measured over
+    the 22,439 update files of 2020 to 2023: 22,437 open with exactly one envelope and two
+    with three, and *no* file carries an envelope marker after the opening run. So complete
+    envelopes are peeled from the front repeatedly and nowhere else — a marker appearing later
+    would be something this adapter does not understand, and it stays an error.
     """
-    if len(numbered) < 3:
-        return frozenset()
-    (n0, l0), (n1, l1), (n2, l2) = numbered[0], numbered[1], numbered[2]
-    if (
-        _ENVELOPE_START.match(l0)
-        and _ENVELOPE_WMO_HEADER.match(l1)
-        and _ENVELOPE_PRODUCT_ID.match(l2)
-    ):
-        return frozenset({n0, n1, n2})
-    return frozenset()
+    named: set[int] = set()
+    index = 0
+    while index + 2 < len(numbered):
+        (n0, l0), (n1, l1), (n2, l2) = numbered[index], numbered[index + 1], numbered[index + 2]
+        if not (
+            _ENVELOPE_START.match(l0)
+            and _ENVELOPE_WMO_HEADER.match(l1)
+            and _ENVELOPE_PRODUCT_ID.match(l2)
+        ):
+            break
+        named.update({n0, n1, n2})
+        index += 3
+    return frozenset(named)
 
 
 def _rows(path: Path) -> Iterator[tuple[int, list[str]]]:
@@ -335,6 +356,7 @@ def read_updates(
     root: Path | None = None,
     as_of: datetime | None = None,
     features: Sequence[str] | None = None,
+    stations: Sequence[str] | None = None,
 ) -> DatasetBundle:
     """Read the update archive as a reader holding it at ``as_of`` would have seen it.
 
@@ -348,12 +370,22 @@ def read_updates(
     :func:`vifusion.adapters.base.late_records` is their difference. A record disseminated
     after the cutoff is not withheld by a filter downstream — it is simply not in the log,
     which is the situation a deployed reader is actually in.
+
+    ``stations`` selects WBANNO identifiers; None reads every station in the archive. Unlike
+    ``as_of``, this is a *scope* filter and not a temporal one — it changes which entities
+    exist, never what was knowable about them — so it cannot make a replay optimistic. It is
+    here because the real archive is not optional to filter: a year of hourly files carries
+    roughly a hundred and fifty stations, and every station is an entity whose records are
+    held in memory. The bundle's notes record which stations were read, so a card computed
+    over a slice cannot be mistaken for one computed over the archive.
     """
     wanted = _selected_features(features)
+    selected = None if stations is None else frozenset(str(station) for station in stations)
     base = root or updates
     paths = update_files(updates)
     kept: dict[str, CanonicalRecord] = {}
     superseded: list[str] = []
+    present_stations: set[str] = set()
 
     for path in paths:
         window_start, window_close = window_of(path)
@@ -364,6 +396,9 @@ def read_updates(
         )
         for line_number, fields in _rows(path):
             station = fields[WBANNO_COLUMN - 1]
+            present_stations.add(station)
+            if selected is not None and station not in selected:
+                continue
             event_time = _observation_time(fields, path, line_number)
             for feature in wanted:
                 record = normalise(
@@ -394,6 +429,16 @@ def read_updates(
                     # inputs, so the first dissemination stands and the correction is named.
                     superseded.append(record.record_id)
 
+    missing = sorted(selected - present_stations) if selected is not None else []
+    if missing:
+        # A mistyped WBANNO that quietly produced a smaller bundle would be reported as a
+        # station's results under a station identifier nothing in the archive carries.
+        raise AdapterError(
+            f"stations {missing} appear in no update file under {updates}; "
+            f"{len(present_stations)} stations are present, for example "
+            f"{sorted(present_stations)[:5]}"
+        )
+
     records = tuple(sorted(kept.values(), key=lambda item: (item.available_time, item.record_id)))
     return DatasetBundle(
         dataset=DATASET_NAME,
@@ -411,6 +456,9 @@ def read_updates(
                 else f", of which those closing after {as_of.isoformat()} "
                 "were withheld as not yet disseminated"
             ),
+            "stations: every station present in the archive"
+            if selected is None
+            else f"stations: {sorted(selected)} of those present in the archive",
         ),
     )
 

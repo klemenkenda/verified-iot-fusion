@@ -175,10 +175,28 @@ def test_the_declared_gap_is_actually_left(name: str) -> None:
     assert split.test.start - split.validation.end >= split.gap
 
 
+H5_SPLITS = frozenset({"uscrn_primary", "enefit_primary", "beijing_transfer"})
+"""Splits that must withhold entities, because H5's transfer claim is asked of them.
+
+Not every frozen split carries the claim. ``uscrn_2023`` exists to run the pipeline against
+the single year that has been downloaded, and only one of its stations has a committed
+quality-controlled file to score against, so there is no second entity to hold out; asking H5
+of it would be asking a question its data cannot answer. The set is written out rather than
+inferred so that a new split does not quietly opt itself out of the requirement — adding one
+means deciding, in this file, whether it bears the claim."""
+
+
+def test_every_split_that_bears_h5_withholds_entities() -> None:
+    assert set(FROZEN) >= H5_SPLITS, f"named splits that do not exist: {H5_SPLITS - set(FROZEN)}"
+    for name in sorted(H5_SPLITS):
+        assert FROZEN[name].held_out_entities, f"{name} bears H5 but withholds nothing"
+
+
 @pytest.mark.parametrize("name", sorted(FROZEN))
 def test_held_out_entities_are_absent_from_training(name: str) -> None:
     split = FROZEN[name]
-    assert split.held_out_entities
+    if not split.held_out_entities:
+        pytest.skip(f"{name} withholds no entities; the requirement lives in H5_SPLITS")
     entities = (*split.held_out_entities, "some-other-entity")
     assert set(split.entities_for("train", entities)).isdisjoint(split.held_out_entities)
     assert set(split.entities_for("validation", entities)).isdisjoint(split.held_out_entities)

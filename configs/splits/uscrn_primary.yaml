@@ -35,9 +35,14 @@ rationale: >-
   behaviour of section 8.2 to appear at every hour of the day.
 
 notes:
-  - "Station identifiers are WBANNO values and must be confirmed against the USCRN station
-     inventory before the final sweep; the two here are placeholders chosen for shape, not
-     from the inventory."
+  - "Station identifiers are WBANNO values, confirmed 2026-09-10 against the downloaded 2023
+     update archive: 53131 and 94074 are both present, as is 94075, the station of the
+     committed final file."
+  - "SUPERSEDED as an experiment, and not by a download. These periods start in 2019, and the
+     hourly update archive begins 2020-10-06 20:00 UTC -- there is no 2019 directory and there
+     will not be one, because earlier years exist only as quality-controlled yearly products
+     that record no delivery time. Availability cannot be reconstructed before that instant.
+     Use a split inside the archive window; section 12 forbids editing this one in place."
   - "Periods bound prediction times, not observation times: a record from before the train
      boundary may still be read by a test-period feature, which is correct — that is history,
      not leakage."

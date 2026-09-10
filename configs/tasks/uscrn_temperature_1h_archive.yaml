@@ -1,0 +1,65 @@
+# One-hour-ahead USCRN station temperature, over the whole archive that exists.
+#
+# This is the Gate B task: the same question as uscrn_temperature_1h, run under
+# configs/splits/uscrn_archive.yaml rather than the unsatisfiable uscrn_primary, against every
+# year of the update archive NOAA publishes. Nearly three years of training, so the seasonal
+# structure the naive floor exploits appears more than once.
+#
+# The searching methods are deliberately absent. Phase 6's question is whether the *baselines*
+# are credible; M3 and M3r are the automated-search comparison H1 has to clear, they cost two
+# full budgets per predictor, and they answer a Phase 7 question. Add them once these numbers
+# are believed.
+schema_version: "0.1.0"
+name: uscrn_temperature_1h_archive
+
+dataset: uscrn
+root: data/raw/uscrn
+options:
+  stations: "94075"
+  # One quality-controlled file per year, and this split spans four.
+  final: >-
+    final/CRNH0203-2020-CO_Boulder_14_W.txt,final/CRNH0203-2021-CO_Boulder_14_W.txt,final/CRNH0203-2022-CO_Boulder_14_W.txt,final/CRNH0203-2023-CO_Boulder_14_W.txt
+
+target_source: uscrn_final
+target_feature: t_hr_avg
+horizon: PT1H
+prediction_interval: PT1H
+
+split: uscrn_archive
+
+predictors: [ridge, lightgbm]
+
+methods:
+  - id: M0
+    program: configs/programs/uscrn_m0_naive.yaml
+    predictor: identity
+    output: persistence
+    description: >-
+      Forecasting floor: the last hourly-mean temperature the station delivered, returned
+      unchanged. Nothing is fitted, and the value is read through the same replay clock as
+      every other method.
+
+  - id: M1
+    program: configs/programs/uscrn_m1_raw_calendar.yaml
+    description: >-
+      Raw current values plus calendar features. Separates the value of a fitted model from
+      the value of engineered features, which is what M2's margin over it means.
+
+  - id: M2
+    program: configs/programs/uscrn_temperature.yaml
+    description: >-
+      Expert-engineered features after the iot-fusion vocabulary: windowed statistics,
+      staleness, gap counts, and within-source fusion. The human bar H1 must clear.
+
+rationale: >-
+  What a one-hour horizon means on this dataset is the whole point of choosing it. Availability
+  is the close of the dissemination window, so the freshest observation at prediction time t
+  describes t - 1h, and a one-hour-ahead forecast is really two hours out from the last data
+  anyone had. The naive floor is correspondingly weaker than the textbook one -- its MASE lands
+  near two rather than near one -- and that gap is the phenomenon the dataset was chosen to
+  expose, not an artifact of the task.
+
+  Measured on this station's 2023 archive: 99.46 per cent of observations arrive one hour after
+  the hour they describe and the rest tail out to ten, so a method that ignored availability
+  would be right almost always and wrong in a way no aggregate metric would show. That is an
+  argument for the per-decision audit rather than for a different dataset.

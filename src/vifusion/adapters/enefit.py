@@ -24,10 +24,15 @@ competition. ``broadcast=False`` keeps them on a single :data:`GLOBAL_ENTITY` in
 is cheap but leaves them unreadable from a per-unit program. The entity graph is the real
 answer and it belongs to the phase that builds it.
 
-**Targets are labels.** ``train.csv`` carries the target, and it enters as ``label`` records
-in their own source, excluded from :meth:`DatasetBundle.searchable_sources`. The competition's
-release logic is kept: a target is available when the block that revealed it was released,
-never when the hour it describes occurred.
+**Targets are labels, and their block is not their release.** ``train.csv`` carries the
+target, and it enters as ``label`` records in their own source, excluded from
+:meth:`DatasetBundle.searchable_sources`. But a target row's ``data_block_id`` names the
+block that *asked* for that day's prediction, not the block that *revealed* the answer: the
+competition hands back a block's actual targets two blocks later, as ``revealed_targets``.
+Dating a label by its own block would therefore publish the answer before the hour it
+describes had happened — which is not a subtle leak but an impossible record, and the
+canonical record refuses it. :data:`LABEL_REVELATION_LAG_BLOCKS` is the correction, and it is
+read off the competition's own example files rather than declared.
 """
 
 from __future__ import annotations
@@ -62,6 +67,16 @@ GLOBAL_ENTITY = "market"
 
 TARGET_SOURCE_ID = "enefit_target"
 LABEL_FEATURE = "target"
+
+LABEL_REVELATION_LAG_BLOCKS = 2
+"""How many blocks after its own a target row is actually handed back.
+
+Recorded, not declared. ``example_test_files/`` is one iteration of the competition API: the
+rows it asks to be predicted (``test.csv``, ``data_block_id`` 634) are for 2023-05-28, while
+the actual targets it reveals in the same iteration (``revealed_targets.csv``, the same block
+id) are for 2023-05-26 — which is exactly the day ``train.csv`` files under block 632. A
+target's block says which prediction it answers; the block two later is when the answer
+arrived."""
 
 MAX_INPUT_RATE_PER_HOUR = 4.0
 """Declared arrival rate per stream. A block delivers a day of hourly rows at once, so the
@@ -139,6 +154,13 @@ class CsvSource:
     with its production. They are different quantities and therefore different features; the
     adapter's own validation report is what surfaced this."""
 
+    revelation_lag_blocks: int = 0
+    """Blocks between the one a row is filed under and the one that delivered it.
+
+    Zero for everything the competition hands over directly. Non-zero only for the target,
+    whose block names the prediction it answers rather than its own arrival — see
+    :data:`LABEL_REVELATION_LAG_BLOCKS`."""
+
     description: str = ""
     max_forecast_horizon: str | None = None
 
@@ -153,6 +175,7 @@ SOURCES: tuple[CsvSource, ...] = (
         scope="unit",
         variant_column="is_consumption",
         variants=(("1", "consumption"), ("0", "production")),
+        revelation_lag_blocks=LABEL_REVELATION_LAG_BLOCKS,
         description="Hourly consumption or production of one prediction unit: the target.",
     ),
     CsvSource(
@@ -290,14 +313,33 @@ def read(
     schedule: BlockSchedule,
     entities: Sequence[str] | None = None,
     broadcast: bool = True,
+    sources: Sequence[str] | None = None,
 ) -> DatasetBundle:
     """Read the competition files under ``root`` into canonical records.
 
     ``entities`` selects prediction units by ``prediction_unit_id``; None reads every unit
     present. Global streams are broadcast to those units unless ``broadcast`` is False — see
     the module docstring on why that is a small-slice technique rather than the answer.
+
+    ``sources`` selects source ids; None reads every file present. It exists because reading
+    everything is not currently possible *or* meaningful. The two weather files carry 112 grid
+    points that all collapse onto one stream per prediction unit — see the module docstring —
+    so features built on them are arbitrary, and reading them broadcast across even two units
+    exhausts tens of gigabytes before producing a number nobody should trust. Naming the
+    sources is how a caller says which streams the result is about; the bundle's notes record
+    the choice, so a card over a slice cannot be mistaken for a card over the competition.
     """
-    present = [source for source in SOURCES if (root / source.filename).exists()]
+    known = {source.source_id for source in SOURCES}
+    if sources is not None:
+        unknown = sorted(set(sources) - known)
+        if unknown:
+            raise AdapterError(f"unknown Enefit sources {unknown}; declared: {sorted(known)}")
+    wanted = known if sources is None else set(sources)
+    present = [
+        source
+        for source in SOURCES
+        if source.source_id in wanted and (root / source.filename).exists()
+    ]
     if not present:
         raise AdapterError(
             f"no Enefit competition files under {root}; expected some of "
@@ -306,21 +348,38 @@ def read(
 
     unit_lookup = _unit_lookup(root)
     unit_ids = _unit_ids(root, entities, unit_lookup)
-    records: list[CanonicalRecord] = []
+    kept: dict[str, CanonicalRecord] = {}
+    superseded: list[str] = []
     for source in present:
-        records.extend(_read_source(root, source, schedule, unit_ids, broadcast, unit_lookup))
+        for record in _read_source(root, source, schedule, unit_ids, broadcast, unit_lookup):
+            previous = kept.get(record.record_id)
+            if previous is None:
+                kept[record.record_id] = record
+            elif previous.value != record.value:
+                # historical_weather.csv carries exact-key duplicate rows with disagreeing
+                # values (a known upstream ingestion artifact, not a correction sequence: there
+                # is no data_block_id or dissemination order to say which is authoritative). The
+                # first row in file order is kept, matching USCRN's first-dissemination-wins
+                # rule, and the rest are named rather than silently dropped.
+                superseded.append(record.record_id)
 
+    records = tuple(sorted(kept.values(), key=lambda item: (item.available_time, item.record_id)))
     return DatasetBundle(
         dataset=DATASET_NAME,
         version=DATASET_VERSION,
-        records=tuple(sorted(records, key=lambda item: (item.available_time, item.record_id))),
+        records=records,
         sources=source_schemas(),
         label_sources=frozenset({TARGET_SOURCE_ID}),
         raw_files=tuple(RawFile.of(root / source.filename, root) for source in present),
+        superseded_record_ids=tuple(sorted(set(superseded))),
         notes=(
             f"block release schedule: {schedule.parameters}",
+            f"targets revealed {LABEL_REVELATION_LAG_BLOCKS} blocks after the block they answer",
             f"prediction units: {list(unit_ids)}",
             "global streams broadcast per unit" if broadcast else "global streams on 'market'",
+            "sources: every competition file present"
+            if sources is None
+            else f"sources: {sorted(wanted)} of those present",
         ),
     )
 
@@ -421,7 +480,8 @@ def _read_source(
                 f"{path.name}:{line} has data_block_id {block_text!r}, which is not an "
                 "integer; availability cannot be derived from a block that has no order"
             ) from error
-        release = schedule.release_of(block_id)
+        revealing_block = block_id + source.revelation_lag_blocks
+        release = schedule.release_of(revealing_block)
         model = RecordedAvailability()
         event_time = _localise(
             _require(row, source.event_column, path, line), source.event_column, path.name, line
@@ -473,12 +533,28 @@ def _read_source(
                     event_time=event_time,
                     model=model,
                     rule=(
-                        "released with data_block_id "
-                        f"{block_id}: the competition records which rows were delivered "
-                        "together, and the block's wall-clock release comes from the "
-                        "declared block schedule"
+                        f"released with data_block_id {revealing_block}"
+                        + (
+                            ""
+                            if source.revelation_lag_blocks == 0
+                            else (
+                                f", {source.revelation_lag_blocks} blocks after the "
+                                f"data_block_id {block_id} this row is filed under, because "
+                                "the competition reveals a block's targets that many blocks "
+                                "later rather than with the request they answer"
+                            )
+                        )
+                        + ": the competition records which rows were delivered together, and "
+                        "the block's wall-clock release comes from the declared block schedule"
                     ),
-                    evidence=f"{path.name} data_block_id={block_id}",
+                    evidence=(
+                        f"{path.name} data_block_id={block_id}"
+                        + (
+                            ""
+                            if source.revelation_lag_blocks == 0
+                            else f" revealed in block {revealing_block}"
+                        )
+                    ),
                     recorded_available_time=release,
                     valid_time=valid_time,
                     issued_time=event_time if source.kind is RecordKind.FORECAST else None,
@@ -487,6 +563,7 @@ def _read_source(
                         "file": path.name,
                         "line": line,
                         "data_block_id": block_id,
+                        "revealing_block_id": revealing_block,
                         "block_schedule": schedule.parameters,
                     },
                 )

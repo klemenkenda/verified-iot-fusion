@@ -1049,3 +1049,236 @@ freeze and expensive after it.
   inherited from LightGBM, because `models/predictors.py` imports it directly to build the
   feature matrix and this repository's rule is that what is imported is declared.
 - **Phase / gate:** Phase 6
+
+---
+
+### 2026-09-10 — The real Enefit data exposed a label leak: a target's block is not its arrival
+
+- **Decision:** `train.csv` rows are dated by the block *two* blocks after the one they are
+  filed under, through `enefit.LABEL_REVELATION_LAG_BLOCKS`. Every other source keeps its own
+  block. The lag is a source property carried in each record's rule, evidence and provenance
+  (`revealing_block_id`), not an option.
+- **Rationale:** A target row's `data_block_id` names the block that *asked* for that day's
+  prediction, not the block that delivered the answer. `example_test_files/` is one iteration
+  of the competition API and shows it directly: block 634 asks for 2023-05-28 and reveals the
+  targets for 2023-05-26, which `train.csv` files under block 632. Dating a label by its own
+  block therefore publishes the answer before the hour it describes has happened.
+- **How it was found, and what that says about the fixture.** Not by reading the competition
+  documentation — by running the adapter on the downloaded file, where the *first* record
+  raised `recorded availability 2021-08-31T11:00 precedes the event at 2021-09-01T00:00`. The
+  canonical record's own invariant caught it, which is the argument for having it. The reason
+  it survived Phase 5 is that the fixture put block 1's targets on block 1's own day, a
+  relation the real file does not have; the fixture has been corrected to reproduce the
+  competition's relation, so the test now fails without the fix.
+- **Made before or after viewing test results:** before — no Enefit result has been produced.
+- **Phase / gate:** Phase 6, before Gate B
+
+---
+
+### 2026-09-10 — Enefit's block release schedule, narrowed from a declaration to an hour
+
+- **Decision:** `first_block_id=0`, `first_release=2021-08-31T11:00:00+03:00`, interval one
+  day. The instant remains a *declared* parameter recorded in every derivation; what changed
+  is that it is no longer arbitrary.
+- **Rationale:** Block `N`'s prediction day is `2021-09-01 + N` days, checked at blocks 0, 1,
+  2, 632, 633, 634 and 635. Across the whole dataset every block's content ends at a fixed
+  offset from that day: historical weather at 10:00 the day before, the weather forecast
+  issued 02:00 that same day, prices for that day, client rows two days before. So the block
+  cannot have been released before 11:00 on the day before its prediction day, and must have
+  been released before that day began. The declaration takes the earliest instant consistent
+  with the evidence; every instant in the window behaves identically for a prediction of the
+  day in question.
+- **Alternatives considered:** Leaving the placeholder and treating the instant as unknowable.
+  Rejected: the file bounds it to a one-hour window, and declaring a value that contradicts
+  the data one holds is worse than declaring one the data implies.
+- **Consequence worth stating:** a midnight target now arrives 35 hours after the hour it
+  measures, which is the delayed-label regime section 8.1 chose this dataset for.
+- **Phase / gate:** Phase 6, before Gate B
+
+---
+
+### 2026-09-10 — Enefit weather is not readable per prosumer
+
+- **Decision:** Enefit is read *without* `historical_weather.csv` and `forecast_weather.csv`
+  until the declared entity graph of section 5.3 exists.
+  `configs/programs/enefit_consumption.yaml` reads both and is therefore a shape, not a
+  runnable program. Recorded here rather than fixed, because the fix is a modelling decision.
+- **Rationale:** A stream is keyed by `(entity, source, feature)`; latitude and longitude
+  distinguish a *record*, not a *stream*. The real files carry 112 grid points, so all of them
+  collapse onto one stream per prediction unit. Measured on block 1 to 3 for unit 0: 2,688
+  records share a single arrival instant against a declared `max_input_rate_per_hour` of four,
+  and one event time carries 112 values spanning 10.7 to 16.0 °C — so `last(temperature)`
+  returns an arbitrary one of 112 stations five degrees apart. Any number computed on that
+  stream would be a number about an arbitrary choice.
+- **Why not simply average.** Averaging 112 points is a defensible feature and an
+  indefensible default: it would silently answer a question nobody asked, and it is exactly
+  the kind of choice section 5.3 says must be declared. `weather_station_to_county_mapping.csv`
+  maps 49 of the 112 points to 15 counties and every prediction unit has a county, so the
+  material for a real entity graph is present.
+- **Phase / gate:** Phase 6 — blocks any Enefit entry in the results table
+
+---
+
+### 2026-09-10 — `dataset-replay` explains a bounded window, and USCRN can be read by station
+
+- **Decision:** `dataset-replay` gained `--from` and `--limit`, the latter defaulting to 24
+  prediction times. `uscrn.read_updates` gained `stations=`, exposed as `--option stations=`.
+- **Rationale:** Both commands were written against fixtures and neither could run on a real
+  archive. `read_updates` held every station in memory: a year is about 8,760 files carrying
+  roughly 160 stations, several million records before a feature is computed. `dataset-replay`
+  audited every prediction time against the whole log — for one station-year, 8,757 requests
+  against 52,542 records, and 8,757 printed audit blocks; two attempts were killed after ten
+  minutes with no output. A command whose purpose is to *explain* decisions has to explain a
+  number of them a person can read.
+- **The station filter is scope, not time.** It changes which entities exist, never what was
+  knowable about them, so it cannot make a replay optimistic — unlike `--as-of`, which is a
+  temporal cut and is tested as one. A WBANNO matching no file is an error rather than a
+  quietly smaller slice.
+- **Phase / gate:** Phase 6
+
+---
+
+### 2026-09-10 — First real-data measurements: USCRN delivery is late in a long thin tail
+
+- **Decision:** Recorded as the empirical basis for section 8.2's claim and for
+  `MAX_INPUT_RATE_PER_HOUR = 4.0`, replacing an assertion with a measurement.
+- **What was measured.** Station 94075 (CO_Boulder_14_W), `t_hr_avg`, the whole 2023 update
+  archive, 8,757 observations: 99.46 % arrive one hour after the hour they describe, and the
+  remainder tails out to ten hours — 2 h ×19, 3 h ×7, 4 h ×5, 5 h ×4, 6 h ×3, 7 h ×3, 8 h ×2,
+  9 h ×2, 10 h ×2. The card also shows three hours of 2023 that the update archive never
+  disseminated at all, and four later corrections refused as replay inputs under section 8.2.
+- **Why it matters.** The delayed relay this dataset was chosen for is real but rare, which
+  cuts both ways: a method that ignores availability will be right 99.46 % of the time and
+  wrong in a way no aggregate metric will show. That is an argument for the per-decision
+  audit rather than against the dataset — and it is why H2's leakage claim is checked by
+  construction rather than by score.
+- **Made before or after viewing test results:** before — no method has been scored on real
+  data.
+- **Phase / gate:** Phase 6, evidence for Gate B
+
+---
+
+### 2026-09-10 — The frozen splits name real entities but the wrong periods
+
+- **Decision:** The entity placeholders in `configs/splits/` are confirmed real and the notes
+  saying otherwise are removed. `uscrn_primary`'s periods are left untouched and cannot
+  currently be run.
+- **What was checked.** USCRN: `53131`, `94074` and `94075` are all WBANNO values present in
+  the 2023 update archive. Enefit: `train.csv` carries 69 prediction units numbered 0 to 68,
+  so held-out units `9` and `15` exist.
+- **What is not resolved.** `uscrn_primary` trains on 2019–2021 and validates and tests
+  through 2022; only 2023 has been downloaded, so every fold is empty. This is the user's
+  decision and not the adapter's: either fetch 2019–2022 from the update archive, or freeze a
+  second split beside the first. Splits are changed by adding a version, never in place
+  (section 12), so `uscrn_primary` stays as it is either way.
+- **Phase / gate:** Phase 6 — blocks the first real baseline, and therefore Gate B
+
+---
+
+### 2026-09-10 — The USCRN update archive begins 2020-10-06, so `uscrn_primary` is unsatisfiable
+
+- **Decision:** `configs/splits/uscrn_primary.yaml` is marked superseded as an experiment. Its
+  training period starts 2019-01-01 and no amount of downloading will produce that data.
+- **What was found.** `https://www.ncei.noaa.gov/pub/data/uscrn/products/hourly02/updates/`
+  lists 2020 through 2026 and no 2019; the 2020 directory begins at
+  `CRN60H0203-202010062000.txt`. Every earlier year exists only as a quality-controlled yearly
+  product, and a yearly product records no delivery time at all — so before 2020-10-06 20:00
+  UTC there is nothing from which availability can be reconstructed, only values with no
+  arrival. This is a property of what NCEI publishes, not a gap to be filled.
+- **Why it matters more than a date change.** Section 8.2 chose USCRN precisely because its
+  availability must be *reconstructed* from the dissemination archive rather than handed over.
+  The reconstruction is the dataset's whole contribution, so the archive's start is a hard
+  bound on the experiment: any period before it could only be replayed by assuming arrival
+  times, which is the substitution section 5.1 forbids. The split's own rationale — three
+  years so a seasonal cycle appears more than once — is still satisfiable, just later:
+  2021-01-01 to 2024-01-01 is three whole years inside the window.
+- **Alternatives considered.** Reading the pre-2020 yearly products as if they had arrived on
+  schedule. Rejected outright: it would manufacture the exact evidence the dataset was chosen
+  for, and a result computed that way would be a result about an assumption.
+- **Consequence for Gate B.** The blocker is no longer "download the missing years" but
+  "refreeze the split inside the archive window". 2020 (partial), 2021 and 2022 have now been
+  fetched alongside 2023.
+- **Made before or after viewing test results:** before.
+- **Phase / gate:** Phase 6, before Gate B
+
+---
+
+### 2026-09-10 — Dataset acquisition is scripted in `tools/`, documented in `data/README.md`
+
+- **Decision:** `tools/fetch_uscrn.py`, `tools/fetch_beijing.py`, `tools/fetch_enefit.py` and
+  the entry point `tools/fetch_datasets.py`, which sequences all three. `data/README.md` is the
+  instruction; `docs/datasets.md` remains the operating manual for what the timestamps *mean*.
+- **Rationale:** Section 12 requires a result to be traceable to the exact bytes it was
+  computed from, and until now the acquisition step was prose in a document. Prose cannot be
+  re-run on another machine. The scripts are resumable and additive — files already present are
+  left alone — so an interrupted fetch of nearly 20,000 files is finished by running the same
+  command again.
+- **Concurrency is measured, not guessed.** Serial fetching runs at about one file per second
+  and eight workers at under two, because the cost is per-request latency rather than
+  bandwidth; the default is sixteen. Three years is roughly 26,000 files and about 1 GB.
+- **What the scripts deliberately do not do.** Accept the Enefit competition rules, or decide
+  what any timestamp means. `fetch_enefit.py` detects missing credentials and unaccepted rules
+  and explains them rather than failing with a stack trace, because a 403 from Kaggle says
+  nothing useful. Downloading a dataset settles nothing about its availability model, and both
+  documents say so.
+- **Checked without the network.** `tests/unit/test_fetch_tools.py` pins the parts that rot
+  silently: that the entry point can still find the three fetchers by bare name, that it offers
+  exactly the datasets the adapter registry knows, that the fetcher's filename pattern matches
+  one the adapter accepts, and that its Enefit file list covers every source the adapter reads.
+  The Beijing fetcher was verified end to end against the existing manual download: 12 of 12
+  files byte-identical.
+- **Phase / gate:** Phase 6
+
+---
+
+### 2026-09-10 — A dissemination window can carry several bulletin envelopes, or no data at all
+
+- **Decision:** Complete WMO bulletin envelopes are peeled from the front of an update file
+  repeatedly rather than once, and a file with no data rows reads as an empty window
+  contributing no records and no error. The all-three-lines-or-none rule that guards against
+  misparsing a file this adapter does not understand is unchanged.
+- **How it was found.** Downloading 2020 to 2022 broke the suite immediately:
+  `CRN60H0203-202102122000.txt` is 159 bytes of three repeated envelopes and nothing else, and
+  the adapter reported it as a column-layout error — the loudest possible way to be wrong about
+  a file that is perfectly well formed.
+- **Measured across the whole archive rather than patched to the one file.** Of the 22,439
+  update files of 2020–2023: 22,437 open with exactly one envelope and two with three; **no**
+  file carries an envelope marker after the opening run, so envelopes are a prefix and a marker
+  appearing later is still an error; **251 files carry no data rows at all**; and every
+  remaining row has exactly 38 fields, which confirms `FIELD_COUNT` against 22,188 real files
+  rather than against the format documentation alone.
+- **An empty window is data.** A little over one per cent of hours delivered nothing. That is
+  a fact about the hour, and the gap it produces is exactly what `staleness` and
+  `missing_count` exist to see; refusing to read the archive because an hour was empty would
+  discard the phenomenon section 8.2 chose this dataset for.
+- **Why the fixtures could not have caught it.** They were hand-built from the column
+  documentation and carry no envelope at all, so the entire envelope path ran only against
+  files nobody had checked. `tests/adapters/test_uscrn_bulletin_envelope.py` now covers it with
+  written files that run everywhere, taking its sample row *from* the committed fixture so the
+  two cannot drift.
+- **Phase / gate:** Phase 6
+
+---
+
+### 2026-09-10 — `uscrn_archive` supersedes `uscrn_primary`, and targets span years
+
+- **Decision:** `configs/splits/uscrn_archive.yaml` trains 2020-10-07 to 2023-07-01, validates
+  and tests on the two quarters after it, and keeps `uscrn_primary`'s week gap and held-out
+  stations. `--option final=` now takes a comma-separated list, because the quality-controlled
+  product is published one file per year and this split spans four.
+- **Rationale:** `uscrn_primary`'s three-year training period is the right shape — a seasonal
+  cycle has to appear more than once — and its start date is impossible. Moving the same shape
+  inside the archive window keeps the reasoning and drops only the impossibility. Two years and
+  nine months covers three winters and three summers.
+- **Alternatives considered:** editing `uscrn_primary` in place. Forbidden by section 12, and
+  rightly: a split hash that changed meaning silently would make two runs incomparable while
+  looking identical. `uscrn_primary` stays, with a note saying why it cannot be run.
+- **On having three splits for one dataset.** Two more than an experiment wants.
+  `uscrn_2023` is the single-year shakedown, `uscrn_archive` is the Gate B experiment, and
+  `uscrn_primary` is a tombstone. Each hashes differently into every manifest, so which one a
+  result was computed under is never in doubt — but the manuscript should report one.
+- **A multi-year run with single-year targets would not have failed.** It would have scored
+  nothing after the year boundary and said so only in a count nobody reads. That is the reason
+  the option changed rather than the task simply naming a later year.
+- **Made before or after viewing test results:** before.
+- **Phase / gate:** Phase 6, for Gate B

@@ -793,6 +793,17 @@ This phase was originally a two-week parity project. It is reduced because its e
 one-hour temperature task, M0 to M2, no LLM, end to end through replay, features, fitting and
 scoring, emitting a run manifest and a generated table. `vifusion evaluate` runs it.)*
 
+*(2026-09-10 — all three datasets are now downloaded, and the pipeline has been run against
+real bytes for the first time. What that changed is recorded in the decision log; the short
+version is that the fixtures were hiding two things. Enefit's `train.csv` files a target under
+the block that **asked** for the prediction rather than the block that revealed it, so dating
+labels by their own block published answers before the hours they describe — the canonical
+record's own invariant caught it on the first record. And neither `read_updates` nor
+`dataset-replay` could run on an archive at real scale: one held every station in memory, the
+other audited every prediction time against the whole log. Both are fixed. The USCRN baselines
+below are the first numbers in this repository that describe measured delivery rather than a
+generator this repository wrote.)*
+
 **Tasks**
 
 - [x] Implement M0–M4. *(M0 persistence/seasonal-naive, M1 raw plus calendar, M2 the expert
@@ -802,7 +813,8 @@ scoring, emitting a run manifest and a generated table. `vifusion evaluate` runs
   about a day, and cross-tool budget equalisation on the candidate-evaluation axis is the swamp
   section 9.1 warns about.)*
 - [x] Freeze downstream models, tuning ranges, metrics, splits, and budgets. *(Splits in
-  `configs/splits/`; the candidate grid and the search budget per method in the task
+  `configs/splits/` — note that `uscrn_primary` is a tombstone: it predates the update archive
+  and is superseded by `uscrn_archive`, which is the one to report; the candidate grid and the search budget per method in the task
   configuration, both hashed into the manifest. Primary metric: R-squared, with MASE reported
   beside it because R-squared measures against the mean and flatters a seasonal series, and
   with H1's paired test on absolute errors since R-squared cannot be resampled per instance.
@@ -811,13 +823,24 @@ scoring, emitting a run manifest and a generated table. `vifusion evaluate` runs
   single-threaded and deterministic so that section 12's byte-identical rerun survives a
   boosted-tree fit, with four capacity settings tuned on validation.)*
 - [ ] Reproduce at least one published or competition-quality reference result where feasible.
+  *(Blocked, and the blocker is named: Enefit is the dataset with a public leaderboard, and its
+  weather streams are not yet readable per prosumer — 112 grid points collapse onto one stream
+  per prediction unit, so `last(temperature)` returns an arbitrary one of them. The declared
+  entity graph of section 5.3 is what unblocks this.)*
 - [x] Create a baseline result table directly from tracked output files. *(`vifusion evaluate`
   writes `results.txt`, `scores.json` and a run manifest carrying the raw-data hashes, the
   split hash, the task hash and each method's program hash.)*
 
 **Acceptance tests**
 
-- [ ] Seasonal-naive results pass hand checks.
+- [x] Seasonal-naive results pass hand checks. *(On the real 2023 archive, not a fixture.
+  `tests/integration/test_real_archive_hand_checks.py` parses the raw update files with plain
+  text handling — no adapter, no canonical record, no replay clock — decides for itself what
+  the station had actually disseminated at each of six prediction times, and requires M0 to
+  have returned exactly that. It also asserts the boundary directly: the observation after the
+  one the floor used had not yet arrived. Everything else in the suite agrees with the adapter
+  by construction, so this is the only check that connects the invariants to the bytes NOAA
+  published. It skips when the archive is absent.)*
 - [x] Model training uses only eligible features and revealed labels. *(Features by the replay
   clock; labels by `tasks.revealed_by`, and every result reports how many training examples
   were withheld as unrevealed — a count that would fall to zero if the rule stopped being
@@ -825,6 +848,41 @@ scoring, emitting a run manifest and a generated table. `vifusion evaluate` runs
 - [x] Rerunning a baseline with the same manifest reproduces its metrics within a declared tolerance. *(Exactly, not within a tolerance: no randomness enters the slice, so `test_two_runs_of_one_task_produce_the_same_scores` compares the full result for equality.)*
 
 **Exit criterion:** Baselines are credible enough that an improvement by the proposed system would be meaningful.
+
+*(Not yet met, and the remaining distance is data rather than code. The first real-data run —
+`configs/tasks/uscrn_temperature_1h_2023.yaml`, validation fold, station 94075 — is ordered as
+it should be and the floor lands where the delivery schedule says it must:*
+
+```text
+method                 n       R2        MAE       RMSE     MASE       bias
+M0/identity          887   0.7194     2.0025     2.8902    2.139     0.0156
+M1/ridge             887   0.7989     1.9594     2.4469    2.093     1.3114
+M1/lightgbm          887   0.8208     1.8109     2.3096    1.934     1.2405
+M2/ridge             887   0.8612     1.3513     2.0325    1.443     0.0342
+M2/lightgbm          887   0.8884     1.2652     1.8224    1.351     0.0631
+```
+
+*M0's MASE of 2.14 is the number the task configuration predicted in prose before any real
+data existed: availability is the close of the dissemination window, so a one-hour-ahead
+forecast is two hours out from the last observation anyone held, and the naive floor is
+correspondingly weaker than the textbook one. That the prediction survived contact with the
+archive is the strongest single piece of evidence so far that the replay clock is right.*
+
+*What it is not is the Gate B baseline. It runs under `configs/splits/uscrn_2023.yaml`, a
+shakedown split over a single year: eight months of training cannot speak to seasonal
+structure, which is what three years are for.*
+
+*Getting those three years turned out not to be a download. `uscrn_primary` trains from
+2019-01-01 and **the hourly update archive begins 2020-10-06 20:00 UTC** — there is no 2019
+directory and there will not be one, because earlier years exist only as quality-controlled
+yearly products that record no delivery time. Availability cannot be reconstructed before that
+instant, so that split was never satisfiable. `configs/splits/uscrn_archive.yaml` supersedes
+it with the same rationale sized to the evidence that exists — training 2020-10-07 to
+2023-07-01, three winters and three summers — and `configs/tasks/uscrn_temperature_1h_archive.yaml`
+is the Gate B task. `tools/fetch_datasets.py` acquires all of it; 28,349 update files and four
+yearly target files are now on disk.*
+
+*Enefit still needs the entity graph, and that is unchanged.)*
 
 ### Phase 7 — LLM proposal loop (effort weeks 9–11)
 

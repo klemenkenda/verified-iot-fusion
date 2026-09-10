@@ -1,0 +1,48 @@
+# A second USCRN split, for the year that has actually been downloaded.
+#
+# This is NOT a replacement for uscrn_primary, and a result computed under it is not the
+# result section 8.2 asks for. uscrn_primary trains on three years so that a full seasonal
+# cycle appears more than once; this one has eight months of training inside a single year,
+# which is enough to exercise the evaluation end to end on real data and not enough to say
+# anything about seasonal structure. It exists because the frozen split cannot be run against
+# an archive that only holds 2023, and because section 12 forbids editing a frozen split in
+# place -- so the honest move is a second one, named for what it is.
+#
+# Its hash reaches every run manifest as split_manifest_hash, so runs under the two splits
+# can never be confused for one another.
+schema_version: "0.1.0"
+name: uscrn_2023
+dataset: uscrn_hourly02
+version: hourly02
+
+# The same week as uscrn_primary, for the same reason: a delayed relay carries observations
+# several hours late and the quality-controlled product is republished a month later.
+gap: P7D
+
+train:
+  start: "2023-01-01T00:00:00Z"
+  end: "2023-09-01T00:00:00Z"
+validation:
+  start: "2023-09-08T00:00:00Z"
+  end: "2023-10-15T00:00:00Z"
+test:
+  start: "2023-10-22T00:00:00Z"
+  end: "2023-12-25T00:00:00Z"
+
+# One station, and therefore nothing held out. The target is the quality-controlled yearly
+# file, which is committed for CO_Boulder_14_W (WBANNO 94075) only, so no other station has
+# labels to score against. H5's entity-held-out claim needs uscrn_primary and more of the
+# archive; it cannot be asked of this split.
+held_out_entities: []
+
+rationale: >-
+  A real-data shakedown of the evaluation pipeline on the only year on disk. Eight months of
+  training, then consecutive validation and test periods so the evaluation is forward in
+  time. The test period stops before the year ends because the target's declared publication
+  delay is thirty days and the final file covers 2023 only.
+
+notes:
+  - "Scope, not science: this split answers 'does the pipeline run on real data', not 'is the
+     baseline credible'. Gate B is about uscrn_primary."
+  - "Periods bound prediction times, not observation times: a record from before the train
+     boundary may still be read by a test-period feature, which is history, not leakage."

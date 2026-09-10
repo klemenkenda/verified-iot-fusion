@@ -1,0 +1,57 @@
+# The first task run against real data rather than a generated fixture.
+#
+# Same task as uscrn_temperature_1h -- one-hour-ahead station air temperature -- against the
+# 2023 update archive for CO_Boulder_14_W, under the uscrn_2023 split. It carries the
+# non-searching methods only: the question it answers is whether the baselines behave
+# sensibly on real delivery, and the searching methods cost two full budgets to tell us
+# nothing about that.
+#
+# Read configs/splits/uscrn_2023.yaml before reading any number this produces. Eight months
+# of training inside one year is not the experiment section 8.2 asks for, and Gate B is about
+# uscrn_primary.
+schema_version: "0.1.0"
+name: uscrn_temperature_1h_2023
+
+dataset: uscrn
+root: data/raw/uscrn
+options:
+  stations: "94075"
+  final: final/CRNH0203-2023-CO_Boulder_14_W.txt
+
+target_source: uscrn_final
+target_feature: t_hr_avg
+horizon: PT1H
+prediction_interval: PT1H
+
+split: uscrn_2023
+
+predictors: [ridge, lightgbm]
+
+methods:
+  - id: M0
+    program: configs/programs/uscrn_m0_naive.yaml
+    predictor: identity
+    output: persistence
+    description: >-
+      Forecasting floor: the last hourly-mean temperature the station delivered, returned
+      unchanged. Nothing is fitted. This is the row Phase 6's remaining acceptance test hand
+      checks, and on real data it is the row that would expose an eligibility error.
+
+  - id: M1
+    program: configs/programs/uscrn_m1_raw_calendar.yaml
+    description: >-
+      Raw current values plus calendar features. Separates the value of a fitted model from
+      the value of engineered features.
+
+  - id: M2
+    program: configs/programs/uscrn_temperature.yaml
+    description: >-
+      Expert-engineered features after the iot-fusion vocabulary: windowed statistics,
+      staleness, gap counts, and within-source fusion.
+
+rationale: >-
+  Everything reported before today came from a fixture archive this repository generated, so
+  every number described its own generator. This task is the smallest thing that replaces
+  that with measured delivery: real dissemination windows, a real thirty-day publication lag
+  on the target, real gaps, and the long thin tail of late relays that section 8.2 chose this
+  dataset for.
