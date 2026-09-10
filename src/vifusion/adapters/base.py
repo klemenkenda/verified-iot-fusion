@@ -198,6 +198,16 @@ class DatasetBundle:
 
     notes: tuple[str, ...] = ()
 
+    entity_graphs: dict[str, dict[str, tuple[str, ...]]] = field(default_factory=dict)
+    """Declared cross-entity edges this read resolved, by the name a program refers to them by.
+
+    Carried here because an edge is a product of reading the dataset, exactly as the records
+    and the source declarations are: ``enefit.station_graph`` is built from two files in the
+    same root. The alternative — handing it to the runtime separately — would put
+    dataset-specific knowledge into whatever calls ``execute()``, which is the thing adapters
+    exist to prevent. It stays out of the *program*, and so out of the program hash: a program
+    names an edge, and the run supplies it (section 5.3)."""
+
     def searchable_sources(self) -> tuple[SourceSchema, ...]:
         """Sources a feature-search interface may offer.
 

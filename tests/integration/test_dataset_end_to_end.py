@@ -151,11 +151,51 @@ def test_a_forecast_operator_selects_the_latest_eligible_issue() -> None:
 
     Read against the weather source's own entity, ``station:59.0:25.5``: weather is one
     entity per grid point (:attr:`enefit.CsvSource.entity_from_key`), not broadcast onto a
-    prosumer unit, so the forecast-selection logic under test lives there rather than on "7"
-    until the cross-entity join names a station to a prosumer.
+    prosumer unit, so the forecast-selection logic under test lives there rather than on "7".
+
+    The program is declared here rather than taken from ``configs/programs``. It used to be
+    ``enefit_consumption.yaml``, which no longer carries a weather-forecast node — reading an
+    archived forecast *for a prosumer* needs a cross-entity forecast operator that does not
+    exist, so that program reads the measured stream through the entity graph instead. The
+    behaviour under test is the forecast operator's, not that program's, and it should not
+    disappear because a checked-in program's feature list changed.
     """
     bundle = read_enefit()
-    plan = _plan("enefit_consumption.yaml")
+    program, diagnostics = parse_program(
+        {
+            "schema_version": "0.1.0",
+            "name": "enefit_forecast_selection",
+            "sources": [
+                {
+                    "source_id": "enefit_weather_forecast",
+                    "feature_name": "temperature",
+                    "kind": "forecast",
+                    "value_type": "number",
+                    "unit": "degC",
+                    "max_input_rate_per_hour": 4,
+                    "max_forecast_horizon": "72h",
+                }
+            ],
+            "nodes": [
+                {
+                    "id": "temp_fc_1h",
+                    "op": "forecast",
+                    "params": {
+                        "source": "enefit_weather_forecast",
+                        "feature": "temperature",
+                        "lead": "1h",
+                    },
+                }
+            ],
+            "outputs": ["temp_fc_1h"],
+        }
+    )
+    assert program is not None, [str(diagnostic) for diagnostic in diagnostics]
+    result = compile_program(program, batch_lowerings=BATCH_LOWERINGS)
+    assert result.accepted, [str(diagnostic) for diagnostic in result.diagnostics]
+    plan = result.plan
+    assert plan is not None
+
     log = canonical_log(bundle)
     lead = timedelta(hours=1)
     zone = enefit.DATASET_TIMEZONE

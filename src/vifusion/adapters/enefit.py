@@ -83,6 +83,14 @@ GLOBAL_ENTITY = "market"
 never on this entity — :attr:`CsvSource.entity_from_key` gives it one entity per grid point
 regardless of ``broadcast``."""
 
+STATION_GRAPH_NAME = "weather_stations"
+"""The name a feature program's ``entity_ref`` uses to reach :func:`station_graph`.
+
+Defined here rather than written as a literal in each program because it is the contract
+between this adapter and any ``cross_entity_*`` node: the adapter publishes the edge under
+this name on :attr:`DatasetBundle.entity_graphs`, and a program that names anything else is
+refused at compile time with ``E-RESOLVE-008``."""
+
 TARGET_SOURCE_ID = "enefit_target"
 LABEL_FEATURE = "target"
 
@@ -394,6 +402,7 @@ def read(
                 superseded.append(record.record_id)
 
     records = tuple(sorted(kept.values(), key=lambda item: (item.available_time, item.record_id)))
+    graph = station_graph(root)
     return DatasetBundle(
         dataset=DATASET_NAME,
         version=DATASET_VERSION,
@@ -410,7 +419,10 @@ def read(
             "sources: every competition file present"
             if sources is None
             else f"sources: {sorted(wanted)} of those present",
+            f"{STATION_GRAPH_NAME}: {len(graph)} units mapped to "
+            f"{len({station for stations in graph.values() for station in stations})} stations",
         ),
+        entity_graphs={STATION_GRAPH_NAME: graph},
     )
 
 
@@ -524,9 +536,9 @@ def station_graph(root: Path) -> dict[str, tuple[str, ...]]:
     """Prediction units mapped to the weather station entities in their county.
 
     This is the entity graph :mod:`vifusion.dsl.schema` names as the prerequisite for
-    cross-entity operators (not yet built): a caller can inspect it today, but no feature
-    program can consume it directly until those operators exist. See the module docstring's
-    "Weather is many entities" paragraph.
+    cross-entity operators. It is published on :attr:`DatasetBundle.entity_graphs` under
+    :data:`STATION_GRAPH_NAME`, which is what a ``cross_entity_mean`` node's ``entity_ref``
+    resolves against. See the module docstring's "Weather is many entities" paragraph.
 
     **Declared, not inferred.** A unit's county comes from ``train.csv`` via
     :data:`UNIT_KEY_COLUMNS` — the same lookup :func:`_owning_units` already builds for

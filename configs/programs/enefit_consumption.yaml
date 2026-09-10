@@ -1,19 +1,50 @@
 # A hand-written feature program for one Enefit prediction unit.
 #
-# The heterogeneous fusion of section 8.1 in miniature: a measured weather stream, a
-# forward-looking price stream, a static contract fact, and a date/time feature, combined
-# into one vector for one prosumer. The target does not appear, and cannot — train.csv enters
-# as label records in a source the feature-search surface excludes.
+# The heterogeneous fusion of section 8.1 in miniature: the unit's own consumption history, a
+# measured weather stream belonging to other entities, a forward-looking price stream, a static
+# contract fact, and date/time features, combined into one vector for one prosumer.
 #
-# Two operators here read *forward-looking* records. A day-ahead price and a weather forecast
-# both describe instants that have not happened, and both are selected by the issue that was
-# actually eligible at the prediction time. That selection is the point of the whole exercise:
-# an implementation that grouped by valid time and took the last issue would leak, and would
-# look exactly like this program while doing it.
+# **The consumption history is read from the label source, and that is not a leak.** Consumption
+# exists in this dataset only as `enefit_target` — there is no measured stream carrying it — so
+# any autoregressive feature has to read it. What makes it safe is the revelation lag: a target
+# row's `data_block_id` names the block that *asked* for the prediction and the answer comes back
+# two blocks later, so the replay clock releases a value long after the hour it describes, and
+# every window below reaches back from a point 11 to 35 hours stale rather than from now. The
+# label source stays excluded from the *search* surface, which is a different question: what a
+# proposer may be offered, not what a hand-written program may read.
+#
+# **Weather belongs to other entities than the prosumer.** The archive's 112 grid points are
+# 112 entities, not 112 rows of one prosumer's stream, so temperature is reached through the
+# declared `weather_stations` edge — the county's stations, averaged — rather than read off
+# this unit directly. An earlier version of this file read `enefit_weather_actual` as if the
+# unit owned it; that compiled cleanly and returned null for every weather feature, which is
+# why the edge is declared here and named by the node rather than left implicit.
+#
+# The price operator reads *forward-looking* records: a day-ahead price describes an instant
+# that has not happened, selected by the issue that was actually eligible at the prediction
+# time. That selection is the point of the whole exercise — an implementation that grouped by
+# valid time and took the last issue would leak, and would look exactly like this while doing
+# it.
+#
+# **What is missing, and why it is missing rather than approximated.** The original program
+# also carried a 24-hour weather mean, a weather staleness, and a weather forecast. Each needs
+# a cross-entity operator that does not exist yet — respectively a windowed aggregate across
+# entities, a staleness across entities, and a forecast across entities; `cross_entity_mean`
+# refuses a forecast source with E-TIME-003 rather than silently reading one grid point. They
+# are left out rather than faked, and this program is correspondingly a thinner M2 than the
+# USCRN one.
 schema_version: "0.1.0"
 name: enefit_consumption
 
 sources:
+  - source_id: enefit_target
+    feature_name: target_consumption
+    kind: label
+    value_type: number
+    unit: kilowatt_hour
+    max_input_rate_per_hour: 4
+    description: Hourly consumption, revealed two blocks after the block that asked for it.
+
   - source_id: enefit_weather_actual
     feature_name: temperature
     kind: measurement
@@ -21,15 +52,6 @@ sources:
     unit: degC
     max_input_rate_per_hour: 4
     description: Measured weather at a grid point.
-
-  - source_id: enefit_weather_forecast
-    feature_name: temperature
-    kind: forecast
-    value_type: number
-    unit: degC
-    max_input_rate_per_hour: 4
-    max_forecast_horizon: 72h
-    description: Archived weather forecast, revisable by later issues.
 
   - source_id: enefit_electricity
     feature_name: euros_per_mwh
@@ -48,50 +70,102 @@ sources:
     max_input_rate_per_hour: 4
     description: Installed capacity of a prediction unit.
 
-nodes:
-  - id: temp_now
-    op: last
-    params: {source: enefit_weather_actual, feature: temperature}
-  - id: temp_mean_24h
-    op: mean
-    params: {source: enefit_weather_actual, feature: temperature, window: 24h}
-  - id: temp_age
-    op: staleness
-    params: {source: enefit_weather_actual, feature: temperature}
+# The edge this program reads weather through. The name is the contract with the adapter,
+# which publishes it as enefit.STATION_GRAPH_NAME; the bound is what lets the compiler size
+# the state a cross-entity read costs.
+#
+# Six is measured, not rounded: across the real archive's 69 prediction units the fan-out runs
+# 0, 1, 2, 3, 4, 5, 6 stations, and 6 is the largest. One unit sits in county 12 — "UNKNOWN" in
+# county_id_to_name_map.json — and maps to no station at all, so its county_temp is null at
+# every prediction time. That is the honest reading of a unit whose county nobody recorded, and
+# it is visible in the feature rather than hidden by falling back to a nearby station.
+entity_graphs:
+  - name: weather_stations
+    max_related_entities: 6
+    description: The weather grid points sitting in a prediction unit's county.
 
-  # The latest issue eligible now, for the hour one ahead of now.
-  - id: temp_fc_1h
+nodes:
+  # --- the consumption history itself, engineered ------------------------------------------
+  # M1 reads this stream raw; the difference between the two is what M2's margin measures.
+  # Every one of these is bounded by the revelation lag, so the freshest value here is 11 to
+  # 35 hours old — the windows below reach back from that, not from the prediction time.
+  - id: consumption_now
+    op: last
+    params: {source: enefit_target, feature: target_consumption}
+  - id: consumption_same_hour_2d
+    op: lag
+    params: {source: enefit_target, feature: target_consumption, lag: 48h}
+  - id: consumption_mean_24h
+    op: mean
+    params: {source: enefit_target, feature: target_consumption, window: 24h}
+  - id: consumption_mean_7d
+    op: mean
+    params: {source: enefit_target, feature: target_consumption, window: 7d}
+  - id: consumption_sd_7d
+    op: stddev
+    params: {source: enefit_target, feature: target_consumption, window: 7d}
+
+  # How stale the delivered history is. On this dataset it is never zero, and how far it is
+  # from zero is the delayed-label regime made into a feature the model can condition on.
+  - id: consumption_age
+    op: staleness
+    params: {source: enefit_target, feature: target_consumption}
+
+  # --- the other sources -------------------------------------------------------------------
+  # The county's measured temperature: every station in it, averaged, each contributing the
+  # latest reading that had actually been delivered at the prediction time.
+  - id: county_temp
+    op: cross_entity_mean
+    params:
+      source: enefit_weather_actual
+      feature: temperature
+      entity_ref: weather_stations
+
+  # The latest issue eligible now, for the hour being predicted rather than the next one: a
+  # day-ahead task wants the price of the target's own hour.
+  - id: price_fc_24h
     op: forecast
-    params: {source: enefit_weather_forecast, feature: temperature, lead: 1h}
-  - id: price_fc_1h
-    op: forecast
-    params: {source: enefit_electricity, feature: euros_per_mwh, lead: 1h}
+    params: {source: enefit_electricity, feature: euros_per_mwh, lead: 24h}
 
   - id: capacity
     op: last
     params: {source: enefit_client, feature: installed_capacity}
 
-  # Full fusion across sources: how wrong the forecast stream currently is about the measured
-  # one. Both sides are eligible at the same instant, which is what makes the difference
-  # meaningful rather than a comparison across time.
-  - id: temp_fc_bias
+  # Cross-source fusion, and the one piece of real domain knowledge here: consumption means
+  # something different for a large installation than a small one, so the level is divided by
+  # the contracted capacity that sets its scale. Units divide to hours, which is what the
+  # compiler assigns — a quantity per unit of capacity, not a second temperature.
+  - id: load_factor
+    op: divide
+    inputs: [consumption_now, capacity]
+
+  # How far the recent day sits from the recent week: a cheap trend that a level alone hides.
+  - id: consumption_trend
     op: subtract
-    inputs: [temp_fc_1h, temp_now]
+    inputs: [consumption_mean_24h, consumption_mean_7d]
 
   - id: hour
     op: hour_of_day
+    params: {timezone: Europe/Tallinn}
+  - id: day_of_year
+    op: day_of_year
     params: {timezone: Europe/Tallinn}
   - id: weekend
     op: is_weekend
     params: {timezone: Europe/Tallinn}
 
 outputs:
-  - temp_now
-  - temp_mean_24h
-  - temp_age
-  - temp_fc_1h
-  - price_fc_1h
+  - consumption_now
+  - consumption_same_hour_2d
+  - consumption_mean_24h
+  - consumption_mean_7d
+  - consumption_sd_7d
+  - consumption_age
+  - county_temp
+  - price_fc_24h
   - capacity
-  - temp_fc_bias
+  - load_factor
+  - consumption_trend
   - hour
+  - day_of_year
   - weekend

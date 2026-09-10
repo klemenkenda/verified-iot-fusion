@@ -264,7 +264,9 @@ def examples_for(
 ) -> tuple[Example, ...]:
     """Replay the program over the dataset and pair each vector with its target."""
     log = canonical_log(bundle)
-    vectors = streaming.execute(plan, log, requests)
+    # The bundle carries whatever cross-entity edges the adapter resolved, so a program with
+    # no cross-entity node is unaffected and one with them needs nothing from the task config.
+    vectors = streaming.execute(plan, log, requests, entity_graphs=bundle.entity_graphs)
     labels = label_index(bundle, task.target_source, task.target_feature)
     return build_examples(vectors, labels, task.horizon)
 

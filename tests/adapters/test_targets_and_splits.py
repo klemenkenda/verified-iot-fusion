@@ -102,8 +102,12 @@ def test_beijing_target_shares_its_quantity_with_a_readable_stream(
     ("program_file", "schemas"),
     [
         ("uscrn_temperature.yaml", uscrn.source_schemas()),
+        ("uscrn_m0_naive.yaml", uscrn.source_schemas()),
+        ("uscrn_m1_raw_calendar.yaml", uscrn.source_schemas()),
         ("beijing_pm25.yaml", beijing.source_schemas()),
         ("enefit_consumption.yaml", enefit.source_schemas()),
+        ("enefit_m0_naive.yaml", enefit.source_schemas()),
+        ("enefit_m1_raw_calendar.yaml", enefit.source_schemas()),
     ],
 )
 def test_a_program_declares_the_sources_its_adapter_produces(
@@ -130,17 +134,59 @@ def test_a_program_declares_the_sources_its_adapter_produces(
 
 
 @pytest.mark.parametrize(
-    ("program_file", "label_sources"),
+    ("program_file", "label_sources", "schemas"),
     [
-        ("uscrn_temperature.yaml", {uscrn.FINAL_SOURCE_ID}),
-        ("beijing_pm25.yaml", {beijing.TARGET_SOURCE_ID}),
-        ("enefit_consumption.yaml", {enefit.TARGET_SOURCE_ID}),
+        ("uscrn_temperature.yaml", {uscrn.FINAL_SOURCE_ID}, uscrn.source_schemas()),
+        ("uscrn_m0_naive.yaml", {uscrn.FINAL_SOURCE_ID}, uscrn.source_schemas()),
+        ("uscrn_m1_raw_calendar.yaml", {uscrn.FINAL_SOURCE_ID}, uscrn.source_schemas()),
+        ("beijing_pm25.yaml", {beijing.TARGET_SOURCE_ID}, beijing.source_schemas()),
+        ("enefit_consumption.yaml", {enefit.TARGET_SOURCE_ID}, enefit.source_schemas()),
+        ("enefit_m0_naive.yaml", {enefit.TARGET_SOURCE_ID}, enefit.source_schemas()),
+        ("enefit_m1_raw_calendar.yaml", {enefit.TARGET_SOURCE_ID}, enefit.source_schemas()),
     ],
 )
-def test_no_checked_in_program_reads_a_target(program_file: str, label_sources: set[str]) -> None:
+def test_a_program_reads_a_target_only_where_nothing_else_carries_it(
+    program_file: str, label_sources: set[str], schemas: tuple[SourceSchema, ...]
+) -> None:
+    """A checked-in program may read its target's history, but only as a last resort.
+
+    This replaces a flat prohibition, which Enefit could not satisfy for a structural reason
+    rather than a careless one: consumption exists in that dataset *only* as ``enefit_target``,
+    so forbidding the label source outright forbids any autoregressive feature — including the
+    naive floor, which has nothing to persist without one. USCRN and Beijing are not in that
+    position, and the rule keeps them where they were: both publish the target's quantity on an
+    ordinary source (``uscrn_update``, ``beijing_measurement``), and a program of theirs reading
+    the label source instead would be laziness, not necessity.
+
+    Reading the label source is temporally safe here for a reason specific to this dataset and
+    recorded in ``LABEL_REVELATION_LAG_BLOCKS``: a target is handed back two blocks after the
+    one that asked for it, so the replay clock releases it 12 to 35 hours after the hour it
+    describes. It is *availability*, not source membership, that keeps the predicted hour out of
+    its own feature vector.
+
+    What does not move: the feature-*search* surface still excludes targets entirely. What a
+    proposer may be offered and what a hand-written program may declare are different questions,
+    and only the first is defended by the surface (see this module's docstring).
+    """
     document = yaml.safe_load((PROGRAM_DIR / program_file).read_text(encoding="utf-8"))
-    declared = {source["source_id"] for source in document["sources"]}
-    assert declared.isdisjoint(label_sources)
+    for source in document["sources"]:
+        if source["source_id"] not in label_sources:
+            continue
+        assert source.get("kind") == "label", (
+            f"{program_file} reads the target source {source['source_id']!r} but does not declare "
+            "it as a label; a target entering a program under another kind is exactly the quiet "
+            "substitution this file exists to prevent"
+        )
+        elsewhere = {
+            schema.source_id
+            for schema in schemas
+            if schema.feature_name == source["feature_name"]
+            and schema.source_id not in label_sources
+        }
+        assert not elsewhere, (
+            f"{program_file} reads {source['feature_name']!r} from the target source, but "
+            f"{sorted(elsewhere)} carries the same quantity and is not a target; read it there"
+        )
 
 
 # --- frozen splits ---------------------------------------------------------------------------

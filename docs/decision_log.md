@@ -1370,3 +1370,55 @@ M2/lightgbm         2039   0.9030     1.2290     1.7131    1.330    -0.1267
   end on the fixture: unit `7` reads `station:59.0:25.5`'s temperature through the declared edge,
   batch and streaming agreeing on value and lineage.
 - **Phase / gate:** Phase 6 — closes the second half of the section 5.3 cross-entity gap.
+
+---
+
+### 2026-09-11 — The Enefit graph is carried on the bundle, not handed to the runtime separately
+
+- **Decision:** `DatasetBundle` gained `entity_graphs`, and `enefit.read` publishes its station
+  graph there under `enefit.STATION_GRAPH_NAME`. `experiment.examples_for` passes
+  `bundle.entity_graphs` straight into `streaming.execute`. This reverses the sentence in the
+  entry above that said the graph would *not* be carried on the bundle.
+- **Why the reversal.** That sentence was defending the right principle against the wrong
+  target. The principle is that the graph must not enter the *program*, because the program hash
+  would then change with every dataset re-read and one compiled program could no longer serve
+  every entity. Carrying it on the bundle does not do that. What the alternative did do was put
+  dataset-specific knowledge into the experiment runner — `if task.dataset == "enefit": build a
+  station graph` — which is precisely what adapters exist to prevent. An edge is a product of
+  reading the dataset, exactly as records and source declarations are.
+- **Consequence:** a program with no cross-entity node is unaffected, and a task config needs to
+  say nothing about graphs at all.
+- **Phase / gate:** Phase 6
+
+---
+
+### 2026-09-11 — A checked-in program may read its target's history where nothing else carries it
+
+- **Decision:** `test_no_checked_in_program_reads_a_target` — a flat prohibition on any
+  checked-in program declaring a label source — is replaced by
+  `test_a_program_reads_a_target_only_where_nothing_else_carries_it`. A program may declare the
+  target source only if (a) it declares it honestly as `kind: label`, and (b) no non-label source
+  the adapter emits carries the same feature. USCRN and Beijing are unaffected and still barred:
+  both publish the target's quantity on an ordinary source (`uscrn_update`, `beijing_measurement`).
+- **Why the old rule could not stand.** It was satisfiable on two datasets and structurally
+  unsatisfiable on the third. Consumption exists in Enefit *only* as `enefit_target` — there is
+  no measured stream carrying it — so forbidding the label source forbids every autoregressive
+  feature, including the naive floor, which has nothing to persist without one. A dataset whose
+  M0 cannot be expressed has no credible baseline ladder, and Enefit is the *primary* dataset.
+- **What makes it safe is availability, not source membership.** A target is handed back two
+  blocks after the block that asked for it, so the replay clock releases it long after the hour
+  it describes. Measured on the real archive at unit 7 over the first fortnight of the validation
+  fold: the freshest *available* target at a prediction time is 11 to 35 hours old, and an
+  individual target's delivery lag runs 12 to 35 hours. The predicted hour cannot reach its own
+  feature vector because it has not been delivered, which is a stronger guarantee than a naming
+  convention about sources.
+- **A measured consequence, not a preference:** the seasonal-naive floor uses a **48-hour** lag,
+  not 24. The same hour yesterday is available at some prediction times and not others — its own
+  delivery lag reaches 35 hours — so a 24-hour seasonal naive would be null for roughly half of
+  them. Forty-eight hours is the shortest same-hour lag the delivery schedule always allows.
+- **What does not move:** the feature-*search* surface still excludes targets entirely. What a
+  proposer may be offered and what a hand-written program may declare are different questions,
+  and only the first is defended by the surface.
+- **Made before or after viewing test results:** before — this was settled while the first
+  Enefit evaluation was still running, and no Enefit score had been seen.
+- **Phase / gate:** Phase 6 — required before any Enefit entry in the results table.
