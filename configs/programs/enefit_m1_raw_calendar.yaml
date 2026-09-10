@@ -1,0 +1,94 @@
+# M1 — raw current values plus calendar features, for Enefit (section 9.1).
+#
+# The minimal deterministic baseline: whatever each stream last said, and what time it is. No
+# windows, no aggregates, no domain knowledge. Its job is to sit between the naive floor and
+# the expert program so that M2's margin can be attributed to *engineered* features rather
+# than to having a fitted model at all.
+#
+# It reads the same four sources M2 does, so the comparison isolates the feature engineering
+# and not the choice of inputs. That includes weather through the declared `weather_stations`
+# edge: reading a raw value is not the same as reading it from the wrong entity, and a
+# baseline that silently returned null for temperature would flatter M2 rather than bound it.
+schema_version: "0.1.0"
+name: enefit_m1_raw_calendar
+
+sources:
+  - source_id: enefit_target
+    feature_name: target_consumption
+    kind: label
+    value_type: number
+    unit: kilowatt_hour
+    max_input_rate_per_hour: 4
+    description: Hourly consumption, revealed two blocks after the block that asked for it.
+
+  - source_id: enefit_weather_actual
+    feature_name: temperature
+    kind: measurement
+    value_type: number
+    unit: degC
+    max_input_rate_per_hour: 4
+    description: Measured weather at a grid point.
+
+  - source_id: enefit_electricity
+    feature_name: euros_per_mwh
+    kind: forecast
+    value_type: number
+    unit: euro / megawatt_hour
+    max_input_rate_per_hour: 4
+    max_forecast_horizon: 48h
+    description: Day-ahead electricity price for the hour it names.
+
+  - source_id: enefit_client
+    feature_name: installed_capacity
+    kind: static
+    value_type: number
+    unit: kilowatt
+    max_input_rate_per_hour: 4
+    description: Installed capacity of a prediction unit.
+
+entity_graphs:
+  - name: weather_stations
+    max_related_entities: 6
+    description: The weather grid points sitting in a prediction unit's county.
+
+nodes:
+  - id: consumption_now
+    op: last
+    params: {source: enefit_target, feature: target_consumption}
+
+  - id: county_temp
+    op: cross_entity_mean
+    params:
+      source: enefit_weather_actual
+      feature: temperature
+      entity_ref: weather_stations
+
+  # A forecast source can only be read by the forecast operator — `last` over it would mix
+  # issue and valid times, and the compiler refuses it with E-TIME-003. The lead names the
+  # hour being predicted, so this is the price for the same hour as the target.
+  - id: price_fc_24h
+    op: forecast
+    params: {source: enefit_electricity, feature: euros_per_mwh, lead: 24h}
+
+  - id: capacity
+    op: last
+    params: {source: enefit_client, feature: installed_capacity}
+
+  - id: hour
+    op: hour_of_day
+    params: {timezone: Europe/Tallinn}
+  - id: day_of_year
+    op: day_of_year
+    params: {timezone: Europe/Tallinn}
+  - id: weekend
+    op: is_weekend
+    params: {timezone: Europe/Tallinn}
+
+outputs:
+  - consumption_now
+  - county_temp
+  - price_fc_24h
+  - capacity
+  - hour
+  - day_of_year
+  - weekend

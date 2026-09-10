@@ -1,0 +1,49 @@
+# M0 — the forecasting floor for Enefit day-ahead hourly consumption.
+#
+# A naive forecast written as a feature program rather than as a separate code path, for the
+# same reason as the USCRN floor: a floor computed by its own routine could read an instant
+# the replay clock had not released, and a floor that quietly sees the future makes every
+# method above it look unimpressive for the wrong reason.
+#
+# **This floor reads the target's own history, and that is not a leak.** Consumption exists in
+# this dataset only as `enefit_target` — there is no measured stream carrying it — so an
+# autoregressive floor has to read the label source. What makes it safe is the revelation lag:
+# a target row's `data_block_id` names the block that *asked* for the prediction, and the
+# competition hands the answer back two blocks later, so the replay clock releases a target
+# long after the hour it describes.
+#
+# **Why the seasonal lag is 48 hours and not 24.** Measured on the real archive at unit 7 over
+# the first fortnight of the validation fold: the freshest *available* target at a prediction
+# time is between 11 and 35 hours old, and an individual target's delivery lag runs 12 to 35
+# hours. So the same hour yesterday is available at some prediction times and not others, and
+# a 24-hour seasonal naive would be null for roughly half of them — not a floor, a coin flip
+# about whether a floor exists. Forty-eight hours clears the 35-hour worst case, so it is the
+# shortest same-hour lag that is always there. The delayed-label regime of section 8.1 is
+# exactly what makes this floor weaker than the textbook one, and that is the phenomenon the
+# dataset was chosen to expose rather than an artifact to tune away.
+schema_version: "0.1.0"
+name: enefit_m0_naive
+
+sources:
+  - source_id: enefit_target
+    feature_name: target_consumption
+    kind: label
+    value_type: number
+    unit: kilowatt_hour
+    max_input_rate_per_hour: 4
+    description: Hourly consumption of a prediction unit, revealed two blocks after its own.
+
+nodes:
+  # The freshest revealed consumption, whatever its age: 11 to 35 hours old in practice.
+  - id: persistence
+    op: last
+    params: {source: enefit_target, feature: target_consumption}
+
+  # Same hour, two days back — the shortest same-hour lag the delivery schedule always allows.
+  - id: seasonal
+    op: lag
+    params: {source: enefit_target, feature: target_consumption, lag: 48h}
+
+outputs:
+  - persistence
+  - seasonal
