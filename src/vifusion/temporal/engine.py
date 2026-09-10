@@ -430,6 +430,49 @@ def _aggregate(values: Sequence[float], aggregate: Aggregate) -> float | None:
     return None if variance is None else variance**0.5
 
 
+def reduce_related(
+    node_id: str, aggregate: Aggregate, values: Sequence[FeatureValue]
+) -> FeatureValue:
+    """Reduce one cross-entity node's per-related-entity reads into a single feature value.
+
+    Each input is one related entity's already-computed ``last``-equivalent read (built by
+    :meth:`~vifusion.compiler.compile.ExecutionPlan.specs_for`'s shadow specs). A related
+    entity with no eligible value is excluded rather than propagated as null — the same
+    convention this module already uses for a windowed aggregate's own nulls, applied here
+    across entities instead of across a time window, and why this calls the same
+    :func:`_aggregate` a :class:`~vifusion.temporal.specs.WindowAggregate` does rather than
+    duplicating its arithmetic.
+    """
+    present: list[FeatureValue] = []
+    numeric: list[float] = []
+    for value in values:
+        reading = value.value
+        if reading is None:
+            continue
+        if isinstance(reading, str):
+            raise TypeError(
+                f"{node_id}: cross-entity aggregates require numeric inputs, got a category "
+                f"from {value.name}"
+            )
+        present.append(value)
+        numeric.append(float(reading))
+    result = _aggregate(numeric, aggregate)
+    if result is None:
+        return FeatureValue(name=node_id, value=None)
+    lineage = tuple(sorted({record_id for value in present for record_id in value.lineage}))
+    if not lineage:
+        return FeatureValue(name=node_id, value=result)
+    available = [
+        value.max_available_time for value in present if value.max_available_time is not None
+    ]
+    return FeatureValue(
+        name=node_id,
+        value=result,
+        lineage=lineage,
+        max_available_time=max(available),
+    )
+
+
 def _feature(
     spec: FeatureSpec,
     value: float | str | None,

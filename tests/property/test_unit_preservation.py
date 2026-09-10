@@ -51,8 +51,14 @@ LEAF_PARAMS: dict[str, dict[str, Any]] = {
     "min": {"window": "2h"},
     "max": {"window": "2h"},
     "forecast": {"lead": "2h"},
+    "cross_entity_mean": {"entity_ref": "neighbours"},
 }
 """The parameters each source-reading operator requires, beyond source and feature."""
+
+ENTITY_GRAPHS: list[dict[str, Any]] = [{"name": "neighbours", "max_related_entities": 2}]
+"""Declared in every program below. A cross-entity operator reads its related entities'
+copy of the same stream, so the unit rule it must follow is the source's own — which is
+exactly what the property checks, and needs no graph data to check."""
 
 CALENDAR_PARAMS: dict[str, Any] = {"timezone": "Europe/Ljubljana", "calendar": "si"}
 
@@ -138,6 +144,7 @@ def test_every_source_reading_operator_follows_its_declared_unit_rule(
         "schema_version": DSL_SCHEMA_VERSION,
         "name": "units",
         "sources": _sources(unit),
+        "entity_graphs": ENTITY_GRAPHS,
         "nodes": [_leaf_node(op)],
         "outputs": ["node"],
     }

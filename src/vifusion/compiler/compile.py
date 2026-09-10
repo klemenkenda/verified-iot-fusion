@@ -30,6 +30,7 @@ one error per round is the difference between mechanical and conversational.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from typing import Any, Literal
@@ -41,6 +42,7 @@ from vifusion.dsl import registry
 from vifusion.dsl.schema import (
     DSL_SCHEMA_VERSION,
     DslError,
+    EntityGraphSchema,
     FeatureProgram,
     Node,
     SourceSchema,
@@ -51,6 +53,7 @@ from vifusion.hashing import hash_object
 from vifusion.temporal.calendar import TimezoneError, resolve_timezone
 from vifusion.temporal.specs import (
     CalendarFeature,
+    CrossEntityAggregate,
     FeatureSpec,
     ForecastValue,
     Lag,
@@ -76,6 +79,31 @@ DIMENSIONLESS = ""
 """The unit of a count: dimensionless, and distinct from "unknown"."""
 
 CompileStatus = Literal["accepted", "rejected", "execution_failed"]
+
+
+EntityGraphs = Mapping[str, Mapping[str, tuple[str, ...]]]
+"""Graph name to (entity id to related entity ids): the runtime data a cross-entity node's
+``entity_ref`` resolves against, e.g. ``{"weather_stations": enefit.station_graph(root)}``.
+Shared by both runtime paths, since both accept it as an ``execute()`` parameter."""
+
+
+class ExecutionError(ValueError):
+    """Runtime-supplied data violates a bound the compiler checked at compile time.
+
+    Distinct from :class:`~vifusion.dsl.schema.DslError`, which is about the document; this
+    is about what a caller handed :meth:`ExecutionPlan.specs_for` at execute time — currently
+    only a related-entity graph that resolves to more entities than it declared it would.
+    """
+
+
+def related_spec_name(node_id: str, related_entity_id: str) -> str:
+    """The synthetic leaf-spec name for one related entity a cross-entity node reads.
+
+    Shared between :meth:`ExecutionPlan.specs_for`, which creates the spec under this name,
+    and the runtime fold step, which looks the resulting value up by it — so the naming
+    convention cannot drift out of sync between the two.
+    """
+    return f"{node_id}__related__{related_entity_id}"
 
 
 @dataclass(frozen=True)
@@ -121,15 +149,78 @@ class ExecutionPlan:
     max_stream_records: int = 0
     """The largest single-stream bound, which is what the runtime enforces per stream."""
 
-    def specs_for(self, entity_id: str) -> tuple[FeatureSpec, ...]:
+    entity_graphs: tuple[EntityGraphSchema, ...] = ()
+    """The graphs this program's cross-entity nodes, if any, may reference by name."""
+
+    def specs_for(
+        self,
+        entity_id: str,
+        entity_graphs: EntityGraphs | None = None,
+    ) -> tuple[FeatureSpec, ...]:
         """Bind the plan's leaf specs to one entity.
 
         Programs are written once and instantiated per entity (section 5.3), so a compiled
         node carries an empty entity id until execution binds it. Binding here rather than
         at compile time is what lets one compiled program serve every station without
         recompilation, and what keeps the program hash independent of the entity.
+
+        ``entity_graphs`` supplies the actual data for this program's declared entity
+        graphs — e.g. ``{"weather_stations": station_graph(root)}`` — keyed by the same name
+        a node's ``entity_ref`` resolved against at compile time. A cross-entity leaf is not
+        itself returned: the engine has no dispatch for it. It expands here into one ordinary
+        :class:`~vifusion.temporal.specs.LastValue` read per related entity, under a name
+        :func:`related_spec_name` also produces, so replay and the engine need no
+        cross-entity awareness at all — only the runtime fold step that later reduces these
+        shadow reads does.
         """
-        return tuple(replace(spec, entity_id=entity_id) for spec in self.leaf_specs)
+        graphs = entity_graphs or {}
+        bound: list[FeatureSpec] = []
+        for node_id in self.order:
+            spec = self.nodes[node_id].spec
+            if spec is None:
+                continue
+            if isinstance(spec, CrossEntityAggregate):
+                for related_id in self.related_entities(node_id, entity_id, graphs):
+                    bound.append(
+                        LastValue(
+                            name=related_spec_name(node_id, related_id),
+                            entity_id=related_id,
+                            source_id=spec.source_id,
+                            feature_name=spec.feature_name,
+                        )
+                    )
+                continue
+            bound.append(replace(spec, entity_id=entity_id))
+        return tuple(bound)
+
+    def related_entities(
+        self,
+        node_id: str,
+        entity_id: str,
+        entity_graphs: EntityGraphs,
+    ) -> tuple[str, ...]:
+        """The related entities one cross-entity node resolves to for one home entity.
+
+        Shared by :meth:`specs_for`, which needs these ids to build the shadow reads, and by
+        the runtime fold step, which needs the same ids to know which shadow values to
+        gather — computed once here so the two can never resolve a different set.
+
+        A missing edge or a home entity absent from it resolves to no related entities,
+        matching ``station_graph``'s own "unmapped county" convention rather than an error;
+        an oversized one is refused, since it would silently exceed the state bound the
+        compiler checked against the edge's declared ``max_related_entities``.
+        """
+        spec = self.nodes[node_id].spec
+        assert isinstance(spec, CrossEntityAggregate)
+        related = entity_graphs.get(spec.graph_name, {}).get(entity_id, ())
+        declared = next(graph for graph in self.entity_graphs if graph.name == spec.graph_name)
+        if len(related) > declared.max_related_entities:
+            raise ExecutionError(
+                f"{node_id}: entity {entity_id!r} names {len(related)} related entities via "
+                f"{spec.graph_name!r}, exceeding its declared bound of "
+                f"{declared.max_related_entities}"
+            )
+        return related
 
     @property
     def leaf_specs(self) -> tuple[FeatureSpec, ...]:
@@ -375,6 +466,19 @@ def _forecast_state_records(source: SourceSchema, node: Node, compilation: _Comp
     return math.ceil(hours * source.max_input_rate_per_hour) + 1
 
 
+def _node_unit(
+    operator: registry.Operator, unit: str, node_id: str, compilation: _Compilation
+) -> str:
+    """The output unit for a stream-reading operator, from its declared unit_rule."""
+    if operator.unit_rule == "dimensionless":
+        return DIMENSIONLESS
+    if operator.unit_rule == "seconds":
+        return "s"
+    if operator.unit_rule == "multiply":
+        return _combine_units("multiply", unit, unit, node_id, compilation) or DIMENSIONLESS
+    return unit
+
+
 def _compile_source_node(
     node: Node, operator: registry.Operator, compilation: _Compilation
 ) -> None:
@@ -437,14 +541,7 @@ def _compile_source_node(
     value_type: ValueType = (
         source.value_type if operator.output_follows_source else operator.output_type
     )
-    if operator.unit_rule == "dimensionless":
-        node_unit = DIMENSIONLESS
-    elif operator.unit_rule == "seconds":
-        node_unit = "s"
-    elif operator.unit_rule == "multiply":
-        node_unit = _combine_units("multiply", unit, unit, node.id, compilation) or DIMENSIONLESS
-    else:
-        node_unit = unit
+    node_unit = _node_unit(operator, unit, node.id, compilation)
 
     spec, lookback = _lower_source_node(node, operator, source, compilation)
     if spec is None:
@@ -565,6 +662,108 @@ def _lower_source_node(
 
     compilation.reject(Code.UNKNOWN_OPERATOR, node.id, f"operator {node.op!r} has no lowering")
     return None, None
+
+
+def _compile_cross_entity_node(
+    node: Node, operator: registry.Operator, compilation: _Compilation
+) -> None:
+    """Stages 2, 4 and 5 for a node that reduces a stream across related entities.
+
+    ``entity_ref`` must name a graph the program declares, exactly as ``source``/``feature``
+    must name a declared source: an undeclared graph is a resolution diagnostic here, not a
+    runtime ``KeyError`` against whatever the caller happens to supply at execute time. The
+    state bound is the graph's declared ``max_related_entities`` rather than anything derived
+    from lookback — see ``registry._cross_entity_operator`` — so it is read directly from the
+    resolved :class:`~vifusion.dsl.schema.EntityGraphSchema`, not from ``_state_records``.
+    """
+    program = compilation.program
+    source_id = node.params.get("source")
+    feature_name = node.params.get("feature")
+    entity_ref = node.params.get("entity_ref")
+    if (
+        not isinstance(source_id, str)
+        or not isinstance(feature_name, str)
+        or not isinstance(entity_ref, str)
+    ):
+        compilation.reject(
+            Code.MISSING_PARAMETER,
+            node.id,
+            f"operator {node.op!r} requires 'source', 'feature', and 'entity_ref' parameters",
+        )
+        return
+
+    graph = program.entity_graph(entity_ref)
+    if graph is None:
+        declared = sorted(g.name for g in program.entity_graphs)
+        compilation.reject(
+            Code.UNKNOWN_ENTITY_GRAPH,
+            node.id,
+            f"entity_ref {entity_ref!r} is not declared; known entity graphs: {declared}",
+        )
+        return
+
+    source = program.source(source_id, feature_name)
+    if source is None:
+        declared_sources = {item.source_id for item in program.sources}
+        if source_id not in declared_sources:
+            compilation.reject(
+                Code.UNKNOWN_SOURCE,
+                node.id,
+                f"source {source_id!r} is not declared; known sources: {sorted(declared_sources)}",
+            )
+        else:
+            fields = {item.feature_name for item in program.sources if item.source_id == source_id}
+            compilation.reject(
+                Code.UNKNOWN_FIELD,
+                node.id,
+                f"source {source_id!r} has no field {feature_name!r}; known: {sorted(fields)}",
+            )
+        return
+
+    if source.kind.value not in operator.accepted_source_kinds:
+        compilation.reject(
+            Code.FUTURE_SOURCE_MISUSED,
+            node.id,
+            f"operator {node.op!r} accepts "
+            f"{sorted(operator.accepted_source_kinds)} streams, but "
+            f"{source_id}/{feature_name} is a {source.kind.value} stream",
+        )
+        return
+
+    if source.value_type != "number":
+        compilation.reject(
+            Code.AGGREGATE_OVER_CATEGORY,
+            node.id,
+            f"operator {node.op!r} aggregates numerically, but "
+            f"{source_id}/{feature_name} is categorical",
+        )
+        return
+
+    unit = _unit_of(source.unit, node.id, compilation)
+    if unit is None:
+        return
+
+    assert operator.aggregate is not None  # every cross_entity operator declares one
+
+    compilation.plans[node.id] = NodePlan(
+        node_id=node.id,
+        op=node.op,
+        inputs=(),
+        value_type=operator.output_type,
+        unit=_node_unit(operator, unit, node.id, compilation),
+        spec=CrossEntityAggregate(
+            name=node.id,
+            entity_id="",  # bound per entity at execution, like every other leaf spec
+            source_id=source.source_id,
+            feature_name=source.feature_name,
+            graph_name=entity_ref,
+            aggregate=operator.aggregate,
+        ),
+        lookback=None,
+        state_records=graph.max_related_entities,
+        batch_eligible=operator.batch_lowering is not None,
+        parity_tolerance_ulps=operator.parity_tolerance_ulps,
+    )
 
 
 def _compile_calendar_node(
@@ -778,7 +977,9 @@ def compile_program(
         assert compiled_node is not None
         compiled_operator = registry.get(compiled_node.op)
         assert compiled_operator is not None
-        if compiled_operator.reads_source:
+        if compiled_operator.cross_entity:
+            _compile_cross_entity_node(compiled_node, compiled_operator, compilation)
+        elif compiled_operator.reads_source:
             _compile_source_node(compiled_node, compiled_operator, compilation)
         elif compiled_operator.calendar_field is not None:
             _compile_calendar_node(compiled_node, compiled_operator, compilation)
@@ -795,6 +996,7 @@ def compile_program(
         )
 
     per_stream = _per_stream_bounds(compilation)
+    cross_entity = _cross_entity_bounds(compilation)
     plan = ExecutionPlan(
         program_name=program.name,
         schema_version=program.schema_version,
@@ -802,19 +1004,45 @@ def compile_program(
         nodes=dict(compilation.plans),
         outputs=tuple(program.outputs),
         sources=tuple(program.sources),
-        total_state_records=sum(per_stream.values()),
-        max_stream_records=max(per_stream.values(), default=0),
+        entity_graphs=tuple(program.entity_graphs),
+        total_state_records=sum(per_stream.values()) + sum(cross_entity.values()),
+        max_stream_records=max(max(per_stream.values(), default=0), 1 if cross_entity else 0),
     )
     return CompileResult(status="accepted", plan=plan, program_hash=program_hash)
 
 
 def _per_stream_bounds(compilation: _Compilation) -> dict[tuple[str, str], int]:
-    """The retained-record bound for each stream: the largest reach of any node on it."""
+    """The retained-record bound for each of the instantiated entity's own streams.
+
+    Cross-entity nodes are excluded and bounded separately by :func:`_cross_entity_bounds`:
+    their state lives on *related* entities' streams, not this entity's, so folding them into
+    this per-``(source, feature)`` bound would either double-count against a same-named
+    stream this entity also reads directly, or (with no such node) simply attribute the bound
+    to the wrong entity.
+    """
     bounds: dict[tuple[str, str], int] = {}
     for plan in compilation.plans.values():
-        if plan.spec is None:
+        if plan.spec is None or isinstance(plan.spec, CrossEntityAggregate):
             continue
         key = (plan.spec.source_id, plan.spec.feature_name)
+        bounds[key] = max(bounds.get(key, 0), plan.state_records)
+    return bounds
+
+
+def _cross_entity_bounds(compilation: _Compilation) -> dict[tuple[str, str, str], int]:
+    """The retained-record bound for each cross-entity edge, keyed by (graph, source, feature).
+
+    Each related entity the edge may resolve to retains at most one record — the same bound
+    as ``last`` — so the bound for one edge is its declared ``max_related_entities``. Nodes
+    that share an edge and stream share the same related-entity buffers, so they are
+    deduplicated by taking the max, the same way :func:`_per_stream_bounds` dedupes a shared
+    single-entity stream rather than summing every node that reads it.
+    """
+    bounds: dict[tuple[str, str, str], int] = {}
+    for plan in compilation.plans.values():
+        if not isinstance(plan.spec, CrossEntityAggregate):
+            continue
+        key = (plan.spec.graph_name, plan.spec.source_id, plan.spec.feature_name)
         bounds[key] = max(bounds.get(key, 0), plan.state_records)
     return bounds
 
@@ -850,7 +1078,9 @@ def _check_state_budget(order: tuple[str, ...], compilation: _Compilation) -> No
     """Stage 5, second half: the derived bound against the declared budget."""
     if compilation.state_budget_records is None:
         return
-    total = sum(_per_stream_bounds(compilation).values())
+    total = sum(_per_stream_bounds(compilation).values()) + sum(
+        _cross_entity_bounds(compilation).values()
+    )
     if total > compilation.state_budget_records:
         compilation.reject(
             Code.STATE_BUDGET_EXCEEDED,

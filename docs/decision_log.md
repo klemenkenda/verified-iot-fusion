@@ -1330,3 +1330,43 @@ M2/lightgbm         2039   0.9030     1.2290     1.7131    1.330    -0.1267
   stands.
 - **Made before or after viewing test results:** before — the test fold is untouched.
 - **Phase / gate:** Phase 6 — this is the evidence Gate B is decided on.
+
+---
+
+### 2026-09-11 — The declared entity graph is a runtime input, and `cross_entity_mean` reads through it
+
+- **Decision:** The entity graph promised by section 5.3 is now real, in two halves. A program
+  *declares* the edges it may use (`FeatureProgram.entity_graphs`: a name and a
+  `max_related_entities` bound); the edge's *data* — `enefit.station_graph(root)` — is handed to
+  `execute()` alongside the record log, not baked into the program and not carried on
+  `DatasetBundle`. One operator reads through it: `cross_entity_mean`, which takes each related
+  entity's latest eligible value and averages across them. This unblocks the entry closed on
+  2026-09-10 as "Enefit weather is not readable per prosumer".
+- **Why declared-plus-supplied rather than either alone.** The name has to be in the program so
+  a typo is `E-RESOLVE-008` at compile time rather than a `KeyError` mid-experiment, and so the
+  state bound can be checked against the same budget as everything else. The *data* must not be,
+  because the program hash would then change with every dataset re-read, and one compiled program
+  could no longer serve every entity — the property `specs_for` exists to preserve.
+- **`max_related_entities` is to a cross-entity edge what `max_input_rate_per_hour` is to a
+  window.** State cannot be bounded from the graph, because the graph is not known at compile
+  time; so the fan-out is declared, and a supplied graph that resolves to more entities than
+  declared raises `ExecutionError` rather than quietly exceeding the bound the compiler checked.
+  Each related entity retains one record, as `last` does, so an edge costs its declared fan-out
+  in total and one record per stream — `max_stream_records` is unchanged by it.
+- **The implementation adds no cross-entity awareness to the engine.** A `StreamKey` is already
+  `(entity, source, feature)`, so one engine instance already keeps unrelated entities' state
+  apart. `specs_for` therefore expands a cross-entity node into one ordinary `LastValue` read per
+  related entity, under a synthetic name, and the runtime fold reduces those afterwards.
+  `replay.py` and `engine.py` needed no change at all; the reduction is the only new step, and it
+  is written twice on purpose — Welford streaming-side, two-pass batch-side — so the parity suite
+  tests a real disagreement risk rather than one shared function.
+- **Only one operator, deliberately.** Section 14 and the registry's own docstring admit
+  operators from documented need. Spatial averaging over a county's grid points is the documented
+  need; `cross_entity_min`/`max`/`count` are one line each through the same factory when
+  something asks for them, and are not written now.
+- **What is not yet done:** `configs/programs/enefit_consumption.yaml` is still a shape rather
+  than a runnable program — it has to be rewritten against this operator, and the search space
+  will only propose cross-entity candidates for a dataset that declares an edge. Verified end to
+  end on the fixture: unit `7` reads `station:59.0:25.5`'s temperature through the declared edge,
+  batch and streaming agreeing on value and lineage.
+- **Phase / gate:** Phase 6 — closes the second half of the section 5.3 cross-entity gap.

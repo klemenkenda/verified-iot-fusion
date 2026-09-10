@@ -26,12 +26,12 @@ nothing.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from vifusion.dsl import registry
-from vifusion.dsl.schema import SourceSchema, parse_duration
+from vifusion.dsl.schema import EntityGraphSchema, SourceSchema, parse_duration
 
 
 @dataclass(frozen=True)
@@ -141,7 +141,17 @@ An operator is generated once without them and once per declared value with them
 stream that goes quiet, which is the behaviour these datasets are full of."""
 
 
-def _grid(space: SearchSpace, parameter: str) -> tuple[str, ...]:
+def _grid(
+    space: SearchSpace, parameter: str, overrides: Mapping[str, tuple[str, ...]] = {}
+) -> tuple[str, ...]:
+    """The values to try for one operator parameter.
+
+    ``overrides`` carries grids that come from the *dataset* rather than the search space —
+    currently only ``entity_ref``, whose legal values are the entity graphs a given dataset
+    declares and so cannot be a fixed field of :class:`SearchSpace`.
+    """
+    if parameter in overrides:
+        return overrides[parameter]
     field_name = PARAMETER_GRIDS.get(parameter)
     if field_name is None:
         raise SearchSpaceError(
@@ -153,13 +163,17 @@ def _grid(space: SearchSpace, parameter: str) -> tuple[str, ...]:
     return values
 
 
-def _combinations(space: SearchSpace, parameters: Sequence[str]) -> list[dict[str, str]]:
+def _combinations(
+    space: SearchSpace,
+    parameters: Sequence[str],
+    overrides: Mapping[str, tuple[str, ...]] = {},
+) -> list[dict[str, str]]:
     """Every assignment of the declared grid to one operator's parameters."""
     combinations: list[dict[str, str]] = [{}]
     for parameter in parameters:
         expanded: list[dict[str, str]] = []
         for partial in combinations:
-            for value in _grid(space, parameter):
+            for value in _grid(space, parameter, overrides):
                 expanded.append({**partial, parameter: value})
         combinations = expanded
     return combinations
@@ -183,13 +197,21 @@ DEFAULT_SPACE = SearchSpace()
 
 
 def enumerate_candidates(
-    sources: Sequence[SourceSchema], space: SearchSpace = DEFAULT_SPACE
+    sources: Sequence[SourceSchema],
+    space: SearchSpace = DEFAULT_SPACE,
+    entity_graphs: Sequence[EntityGraphSchema] = (),
 ) -> tuple[Candidate, ...]:
     """Every feature the declared grid can express over the declared sources.
 
     Deterministic in order: the same sources and the same grid produce the same list on every
     machine, so a seeded search is reproducible rather than merely repeatable.
+
+    ``entity_graphs`` are the cross-entity edges the dataset declares. A cross-entity
+    operator is generated once per declared edge, and not at all for a dataset that declares
+    none — a candidate naming an edge that does not exist would be rejected by the compiler
+    with E-RESOLVE-008 and spend budget to learn nothing.
     """
+    graph_names = tuple(graph.name for graph in entity_graphs)
     candidates: list[Candidate] = []
 
     for source in _numeric_sources(sources):
@@ -202,7 +224,10 @@ def enumerate_candidates(
                 continue
             if str(source.kind) not in operator.accepted_source_kinds:
                 continue
+            if operator.cross_entity and not graph_names:
+                continue
 
+            overrides = {"entity_ref": graph_names} if operator.cross_entity else {}
             required = sorted(operator.required_params - {"source", "feature"})
             optional = sorted(operator.optional_params & OPTIONAL_PARAMETERS)
 
@@ -210,7 +235,7 @@ def enumerate_candidates(
             variants.extend([*required, extra] for extra in optional)
 
             for parameters in variants:
-                for assignment in _combinations(space, parameters):
+                for assignment in _combinations(space, parameters, overrides):
                     if not _plausible(assignment):
                         continue
                     suffix = [assignment[key] for key in parameters]

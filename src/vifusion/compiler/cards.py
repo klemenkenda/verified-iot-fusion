@@ -18,6 +18,7 @@ from typing import Any
 from vifusion.compiler.compile import ExecutionPlan, NodePlan
 from vifusion.dsl import registry
 from vifusion.dsl.schema import SourceSchema, format_duration
+from vifusion.temporal.specs import CrossEntityAggregate
 
 
 @dataclass(frozen=True)
@@ -36,11 +37,22 @@ class FeatureCard:
     execution_path: str
     parity_tolerance_ulps: int
 
+    entity_ref: str | None = None
+    """The declared edge a cross-entity feature reads through, or None for an ordinary one.
+
+    Without this the card would name the stream but not the fact that it is read on *other*
+    entities, which is the whole substance of such a feature — a reader deciding whether it
+    is defensible needs to know it depends on data the predicted entity does not own."""
+
     def render(self) -> str:
         lines = [
             f"{self.name}  ({self.operator})",
             f"  {self.summary}",
             f"  sources        {', '.join(self.sources) or '-'}",
+        ]
+        if self.entity_ref is not None:
+            lines.append(f"  entities       related via {self.entity_ref}")
+        lines += [
             f"  window         {self.window or '-'}",
             f"  unit           {self.unit or 'dimensionless'} ({self.value_type})",
             f"  availability   {self.availability_rule}",
@@ -102,6 +114,7 @@ def card_for(plan: ExecutionPlan, node_id: str) -> FeatureCard:
         state_records=node.state_records,
         execution_path="batch or streaming" if node.batch_eligible else "streaming only",
         parity_tolerance_ulps=node.parity_tolerance_ulps,
+        entity_ref=node.spec.graph_name if isinstance(node.spec, CrossEntityAggregate) else None,
     )
 
 
@@ -150,6 +163,13 @@ def lineage_record(plan: ExecutionPlan) -> dict[str, Any]:
                 "lookback": _window_of(plan.nodes[node_id]),
                 "state_records": plan.nodes[node_id].state_records,
                 "batch_eligible": plan.nodes[node_id].batch_eligible,
+                # Present only where it means something, so an ordinary node's record keeps
+                # the shape every existing manifest already carries.
+                **(
+                    {"entity_ref": spec.graph_name}
+                    if isinstance(spec := plan.nodes[node_id].spec, CrossEntityAggregate)
+                    else {}
+                ),
             }
             for node_id in plan.order
         ],

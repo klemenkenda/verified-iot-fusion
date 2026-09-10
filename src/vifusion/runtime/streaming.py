@@ -26,12 +26,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from vifusion.compiler.compile import ExecutionPlan
+from vifusion.compiler.compile import EntityGraphs, ExecutionPlan, related_spec_name
 from vifusion.runtime.arithmetic import combine
+from vifusion.temporal.engine import reduce_related
 from vifusion.temporal.late_data import LateArrivalPolicy, apply_late_records
 from vifusion.temporal.records import CanonicalRecord
 from vifusion.temporal.replay import PredictionRequest, replay
-from vifusion.temporal.specs import FeatureValue, FeatureVector
+from vifusion.temporal.specs import CrossEntityAggregate, FeatureValue, FeatureVector
 
 
 @dataclass(frozen=True)
@@ -48,9 +49,10 @@ def execute(
     log: Sequence[CanonicalRecord],
     requests: Sequence[PredictionRequest],
     state_bound: int | None = None,
+    entity_graphs: EntityGraphs | None = None,
 ) -> tuple[FeatureVector, ...]:
     """Run a compiled program over a record log and return its feature vectors."""
-    return execute_detailed(plan, log, requests, state_bound).vectors
+    return execute_detailed(plan, log, requests, state_bound, entity_graphs).vectors
 
 
 def execute_detailed(
@@ -58,6 +60,7 @@ def execute_detailed(
     log: Sequence[CanonicalRecord],
     requests: Sequence[PredictionRequest],
     state_bound: int | None = None,
+    entity_graphs: EntityGraphs | None = None,
 ) -> StreamingResult:
     """Run a compiled program, reporting measured state alongside the vectors.
 
@@ -66,7 +69,10 @@ def execute_detailed(
     entities' state apart.
 
     The state bound defaults to the compiled figure, so the runtime enforces the bound the
-    compiler derived rather than an independently chosen one.
+    compiler derived rather than an independently chosen one. ``entity_graphs`` supplies the
+    actual data for any of the program's declared cross-entity edges — see
+    :meth:`~vifusion.compiler.compile.ExecutionPlan.specs_for`; a program with no cross-entity
+    nodes needs it not at all.
     """
     # The engine checks each stream's retained window separately, so the bound it is given
     # is the largest single-stream bound rather than the program's total footprint.
@@ -81,12 +87,12 @@ def execute_detailed(
         result = replay(
             log,
             entity_requests,
-            plan.specs_for(entity_id),
+            plan.specs_for(entity_id, entity_graphs),
             state_bound=effective_bound,
         )
         peak = max(peak, result.peak_state_records)
         for vector in result.vectors:
-            produced[(entity_id, vector.prediction_time)] = _fold(plan, vector)
+            produced[(entity_id, vector.prediction_time)] = _fold(plan, vector, entity_graphs)
 
     return StreamingResult(
         vectors=tuple(
@@ -129,6 +135,7 @@ def execute_with_late_records(
     *,
     policy: LateArrivalPolicy = LateArrivalPolicy.IGNORE,
     state_bound: int | None = None,
+    entity_graphs: EntityGraphs | None = None,
 ) -> LateExecutionResult:
     """Replay a compiled program, then apply records that arrived after the vectors were out.
 
@@ -153,7 +160,7 @@ def execute_with_late_records(
         outcome = apply_late_records(
             log,
             entity_requests,
-            plan.specs_for(entity_id),
+            plan.specs_for(entity_id, entity_graphs),
             late,
             policy=policy,
             state_bound=effective_bound,
@@ -163,7 +170,7 @@ def execute_with_late_records(
         late_ids.extend(outcome.late_record_ids)
         peak = max(peak, outcome.result.peak_state_records)
         for vector in outcome.result.vectors:
-            produced[(entity_id, vector.prediction_time)] = _fold(plan, vector)
+            produced[(entity_id, vector.prediction_time)] = _fold(plan, vector, entity_graphs)
 
     return LateExecutionResult(
         vectors=tuple(
@@ -177,12 +184,25 @@ def execute_with_late_records(
     )
 
 
-def _fold(plan: ExecutionPlan, leaves: FeatureVector) -> FeatureVector:
-    """Evaluate arithmetic nodes over leaf values, then project to the declared outputs."""
+def _fold(
+    plan: ExecutionPlan, leaves: FeatureVector, entity_graphs: EntityGraphs | None
+) -> FeatureVector:
+    """Evaluate cross-entity and arithmetic nodes over leaf values, project to the outputs.
+
+    A cross-entity node's own spec was never sent to the engine — ``specs_for`` expanded it
+    into one shadow ``last`` read per related entity instead — so its value is not among
+    ``leaves.values`` and must be produced here, by gathering those shadow reads back under
+    the same ``related_spec_name`` convention and reducing them.
+    """
     values: dict[str, FeatureValue] = {value.name: value for value in leaves.values}
 
     for node_id in plan.order:
         node = plan.nodes[node_id]
+        if isinstance(node.spec, CrossEntityAggregate):
+            related = plan.related_entities(node_id, leaves.entity_id, entity_graphs or {})
+            shadows = [values[related_spec_name(node_id, related_id)] for related_id in related]
+            values[node_id] = reduce_related(node_id, node.spec.aggregate, shadows)
+            continue
         if node.spec is not None:
             continue
         left, right = (values[name] for name in node.inputs)

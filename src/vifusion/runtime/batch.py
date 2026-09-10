@@ -28,7 +28,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from vifusion.compiler.compile import ExecutionPlan
+from vifusion.compiler.compile import EntityGraphs, ExecutionPlan, related_spec_name
 from vifusion.runtime.arithmetic import combine
 from vifusion.temporal import calendar
 from vifusion.temporal.boundaries import in_trailing_window, within_staleness
@@ -37,6 +37,7 @@ from vifusion.temporal.replay import PredictionRequest
 from vifusion.temporal.specs import (
     Aggregate,
     CalendarFeature,
+    CrossEntityAggregate,
     FeatureSpec,
     FeatureValue,
     FeatureVector,
@@ -62,6 +63,7 @@ BATCH_LOWERINGS = frozenset(
         "stddev",
         "min",
         "max",
+        "cross_entity_mean",
         "add",
         "subtract",
         "multiply",
@@ -162,6 +164,47 @@ def _aggregate(values: list[float], aggregate: Aggregate) -> float | None:
     return variance if aggregate is Aggregate.VARIANCE else math.sqrt(variance)
 
 
+def _reduce_related(
+    node_id: str, aggregate: Aggregate, values: Sequence[FeatureValue]
+) -> FeatureValue:
+    """Reduce one cross-entity node's per-related-entity reads, batch-side.
+
+    Deliberately runs this module's own two-pass ``_aggregate`` rather than calling the
+    streaming path's reducer — the same divergence ``mean`` and ``sum`` already have, so the
+    differential suite exercises a real disagreement risk instead of one shared function.
+    A related entity with no eligible value is excluded rather than propagated as null,
+    matching the streaming reducer's rule.
+    """
+    present: list[FeatureValue] = []
+    numbers: list[float] = []
+    for value in values:
+        reading = value.value
+        if reading is None:
+            continue
+        if isinstance(reading, str):
+            raise TypeError(
+                f"{node_id}: cross-entity aggregates require numeric inputs, got a category "
+                f"from {value.name}"
+            )
+        present.append(value)
+        numbers.append(float(reading))
+    result = _aggregate(numbers, aggregate)
+    if result is None:
+        return FeatureValue(name=node_id, value=None)
+    lineage = tuple(sorted({record_id for value in present for record_id in value.lineage}))
+    if not lineage:
+        return FeatureValue(name=node_id, value=result)
+    available = [
+        value.max_available_time for value in present if value.max_available_time is not None
+    ]
+    return FeatureValue(
+        name=node_id,
+        value=result,
+        lineage=lineage,
+        max_available_time=max(available),
+    )
+
+
 def _evaluate_leaf(
     spec: FeatureSpec,
     index: dict[tuple[str, str, str], _Stream],
@@ -251,6 +294,7 @@ def execute(
     plan: ExecutionPlan,
     log: Sequence[CanonicalRecord],
     requests: Sequence[PredictionRequest],
+    entity_graphs: EntityGraphs | None = None,
 ) -> tuple[FeatureVector, ...]:
     """Run the batch path for a fully batch-eligible plan.
 
@@ -275,12 +319,25 @@ def execute(
         entity_id = request.entity_id
         prediction_time = request.prediction_time
         if entity_id not in bound:
-            bound[entity_id] = {spec.name: spec for spec in plan.specs_for(entity_id)}
+            bound[entity_id] = {
+                spec.name: spec for spec in plan.specs_for(entity_id, entity_graphs)
+            }
+        specs = bound[entity_id]
         values: dict[str, FeatureValue] = {}
         for node_id in plan.order:
             node = plan.nodes[node_id]
-            if node.spec is not None:
-                values[node_id] = _evaluate_leaf(bound[entity_id][node_id], index, prediction_time)
+            if isinstance(node.spec, CrossEntityAggregate):
+                # The node's own spec has no batch lowering and needs none: it was expanded
+                # into one ordinary read per related entity, which do.
+                shadows = [
+                    _evaluate_leaf(
+                        specs[related_spec_name(node_id, related_id)], index, prediction_time
+                    )
+                    for related_id in plan.related_entities(node_id, entity_id, entity_graphs or {})
+                ]
+                values[node_id] = _reduce_related(node_id, node.spec.aggregate, shadows)
+            elif node.spec is not None:
+                values[node_id] = _evaluate_leaf(specs[node_id], index, prediction_time)
             else:
                 left, right = (values[name] for name in node.inputs)
                 values[node_id] = combine(node_id, node.op, left, right)

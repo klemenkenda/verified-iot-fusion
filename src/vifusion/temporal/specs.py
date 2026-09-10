@@ -213,6 +213,23 @@ class ForecastValue(FeatureSpec):
 
 
 @dataclass(frozen=True, kw_only=True)
+class CrossEntityAggregate(FeatureSpec):
+    """A reduction over the latest eligible value from each of ``entity_id``'s related entities.
+
+    ``entity_id`` here is the *home* entity, bound the same way every other leaf spec is
+    bound. ``graph_name`` names the declared edge (``FeatureProgram.entity_graphs``) the
+    compiler resolved ``entity_ref`` against; the runtime uses it to look up the actual
+    related-entity ids from whatever graph data the caller supplied at execute time. This
+    spec is never itself handed to :class:`FeatureEngine` — the compiler expands it into one
+    ordinary :class:`LastValue`-shaped read per related entity, so no new engine dispatch is
+    needed; only the fold step that consumes the results is new.
+    """
+
+    graph_name: str
+    aggregate: Aggregate
+
+
+@dataclass(frozen=True, kw_only=True)
 class CalendarFeature(FeatureSpec):
     """A date/time feature of the prediction time itself.
 

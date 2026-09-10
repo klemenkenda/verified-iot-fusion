@@ -59,6 +59,7 @@ PROGRAM: dict[str, Any] = {
             "max_forecast_horizon": "24h",
         },
     ],
+    "entity_graphs": [{"name": "neighbours", "max_related_entities": 3}],
     "nodes": [
         {"id": "t_last", "op": "last", "params": {"source": "s1", "feature": "temp"}},
         {
@@ -93,6 +94,13 @@ PROGRAM: dict[str, Any] = {
             "id": "fc",
             "op": "forecast",
             "params": {"source": "nwp", "feature": "temp_fc", "lead": "2h"},
+        },
+        # Reads the *neighbours'* streams, not e1's: the two paths must agree on a value
+        # neither one computes from the requested entity's own records.
+        {
+            "id": "nbr_avg",
+            "op": "cross_entity_mean",
+            "params": {"source": "s1", "feature": "temp", "entity_ref": "neighbours"},
         },
         # The date/time group. Pure functions of the prediction time, so their parity is
         # exact by construction; they are included so the coverage guard below stays honest.
@@ -145,11 +153,17 @@ PROGRAM: dict[str, Any] = {
         "lo",
         "hi",
         "fc",
+        "nbr_avg",
         "spread",
         "bias",
         "ratio",
     ],
 }
+
+NEIGHBOURS = ("e2", "e3")
+GRAPHS = {"neighbours": {"e1": NEIGHBOURS}}
+"""The declared edge's runtime data. Supplied to both paths, as a caller would supply
+``{"weather_stations": enefit.station_graph(root)}``."""
 
 
 def _plan() -> ExecutionPlan:
@@ -186,6 +200,25 @@ def _log(draw: st.DrawFn) -> list[CanonicalRecord]:
                 available_time=event_time + delay * STEP,
             )
         )
+    # The neighbours' own measurements, on the same stream but a different entity. Without
+    # these the cross-entity node would be null in every example and its parity vacuous.
+    for neighbour in NEIGHBOURS:
+        for index in range(draw(st.integers(min_value=0, max_value=4))):
+            event_step = draw(st.integers(min_value=0, max_value=12))
+            delay = draw(st.integers(min_value=0, max_value=4))
+            event_time = BASE + event_step * STEP
+            records.append(
+                CanonicalRecord(
+                    record_id=f"{neighbour}m{index:03d}",
+                    kind=RecordKind.MEASUREMENT,
+                    entity_id=neighbour,
+                    source_id="s1",
+                    feature_name="temp",
+                    value=draw(st.one_of(st.none(), st.floats(200.0, 320.0, allow_nan=False))),
+                    event_time=event_time,
+                    available_time=event_time + delay * STEP,
+                )
+            )
     for index in range(draw(st.integers(min_value=0, max_value=6))):
         issue_step = draw(st.integers(min_value=0, max_value=10))
         lag = draw(st.integers(min_value=0, max_value=3))
@@ -221,8 +254,8 @@ _TIMES = st.lists(
 @SETTINGS
 def test_batch_and_streaming_agree(log: list[CanonicalRecord], times: list[datetime]) -> None:
     requests = [PredictionRequest("e1", moment) for moment in times]
-    streamed = streaming.execute(PLAN, log, requests)
-    batched = batch.execute(PLAN, log, requests)
+    streamed = streaming.execute(PLAN, log, requests, entity_graphs=GRAPHS)
+    batched = batch.execute(PLAN, log, requests, entity_graphs=GRAPHS)
 
     assert len(streamed) == len(batched)
     for stream_vector, batch_vector in zip(streamed, batched, strict=True):
@@ -257,7 +290,7 @@ def test_measured_state_stays_within_the_compiled_bound(
     observation that could falsify it.
     """
     requests = [PredictionRequest("e1", moment) for moment in times]
-    result = streaming.execute_detailed(PLAN, log, requests)
+    result = streaming.execute_detailed(PLAN, log, requests, entity_graphs=GRAPHS)
     assert result.peak_state_records <= PLAN.total_state_records
 
 

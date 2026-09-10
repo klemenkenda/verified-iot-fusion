@@ -136,6 +136,25 @@ def _no_declared_rate() -> dict[str, Any]:
     return program
 
 
+def _undeclared_entity_graph() -> dict[str, Any]:
+    """A cross-entity node pointing at an edge the program never declared.
+
+    The program declares one graph and the node names another, so this is a resolution
+    failure rather than a missing declaration — the case a typo produces.
+    """
+    program = valid_program()
+    program["entity_graphs"] = [{"name": "neighbours", "max_related_entities": 2}]
+    program["nodes"].append(
+        {
+            "id": "elsewhere",
+            "op": "cross_entity_mean",
+            "params": {"source": "s1", "feature": "temp", "entity_ref": "siblings"},
+        }
+    )
+    program["outputs"].append("elsewhere")
+    return program
+
+
 CASES: list[tuple[Code, dict[str, Any], dict[str, Any]]] = [
     (Code.SCHEMA_INVALID, _mutate(nodes="not a list"), {}),
     (Code.SCHEMA_VERSION_UNSUPPORTED, _mutate(schema_version="9.9.9"), {}),
@@ -154,6 +173,7 @@ CASES: list[tuple[Code, dict[str, Any], dict[str, Any]]] = [
     (Code.UNKNOWN_OUTPUT, _mutate(outputs=["t_last", "never_defined"]), {}),
     (Code.UNKNOWN_CALENDAR, _unknown_calendar(), {}),
     (Code.UNKNOWN_TIMEZONE, _unknown_timezone(), {}),
+    (Code.UNKNOWN_ENTITY_GRAPH, _undeclared_entity_graph(), {}),
     (Code.CYCLE, _cycle(), {}),
     (
         Code.DUPLICATE_NODE_ID,

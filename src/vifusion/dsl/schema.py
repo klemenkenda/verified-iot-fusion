@@ -105,6 +105,30 @@ class SourceSchema(_Strict):
         return (self.source_id, self.feature_name)
 
 
+class EntityGraphSchema(_Strict):
+    """One declared edge a cross-entity operator may read through.
+
+    Naming the graph here, rather than letting a node's ``entity_ref`` param point at
+    whatever a caller happens to supply, is what keeps cross-entity reads a declared join
+    instead of an implicit one (see :class:`FeatureProgram`). The graph's actual data — e.g.
+    ``enefit.station_graph(root)`` — arrives at execute time, the same way the record log
+    does; only its name and state-bound contract are part of the hashed program.
+    """
+
+    name: str
+    max_related_entities: Annotated[int, Field(gt=0)]
+    """Upper bound on how many related entities this edge may return for any one entity.
+
+    A cross-entity operator retains one record per related entity (see ``registry.py``'s
+    ``_cross_entity_operator``), so this is exactly what ``max_input_rate_per_hour`` is for a
+    windowed operator: the number a static state bound cannot be derived without. The actual
+    graph handed to the runtime may resolve to fewer related entities than this on any given
+    entity; it must never resolve to more, or the bound the compiler believed becomes false.
+    """
+
+    description: str | None = None
+
+
 class Node(_Strict):
     """One operator application. ``inputs`` name other nodes; ``params`` are literals."""
 
@@ -127,8 +151,10 @@ class FeatureProgram(_Strict):
     """A complete, hashable feature program.
 
     The program is written once and instantiated per entity (section 5.3), so it names no
-    entity. Cross-entity references resolve through a declared entity graph, never an
-    implicit join; that graph arrives with the cross-entity operators in a later phase.
+    entity. Cross-entity references resolve through a declared entity graph (see
+    ``entity_graphs`` below), never an implicit join: a node names an edge by its declared
+    name, not by an entity id, and the edge's actual data arrives at execute time rather than
+    being hashed into the program.
     """
 
     schema_version: str
@@ -136,6 +162,13 @@ class FeatureProgram(_Strict):
     sources: list[SourceSchema]
     nodes: list[Node]
     outputs: list[str]
+
+    entity_graphs: list[EntityGraphSchema] = Field(default_factory=list)
+    """Cross-entity edges this program may reference by name from a node's ``entity_ref``.
+
+    Declared here so an unknown ``entity_ref`` is a compile-time diagnostic rather than a
+    runtime surprise, and so the state bound it implies is checked against the same budget
+    every other operator's is."""
 
     calendars: dict[str, list[str]] = Field(default_factory=dict)
     """Named holiday calendars, as ISO dates.
@@ -165,4 +198,10 @@ class FeatureProgram(_Strict):
         for node in self.nodes:
             if node.id == node_id:
                 return node
+        return None
+
+    def entity_graph(self, name: str) -> EntityGraphSchema | None:
+        for graph in self.entity_graphs:
+            if graph.name == name:
+                return graph
         return None

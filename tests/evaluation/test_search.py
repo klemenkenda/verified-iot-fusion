@@ -19,6 +19,7 @@ from vifusion.adapters import beijing, uscrn
 from vifusion.adapters.base import DatasetBundle
 from vifusion.adapters.splits import SplitManifest
 from vifusion.dsl import registry
+from vifusion.dsl.schema import EntityGraphSchema
 from vifusion.evaluation import experiment
 from vifusion.evaluation.tasks import TaskConfig
 from vifusion.models import search
@@ -57,8 +58,34 @@ def test_the_space_is_enumerated_from_the_registry() -> None:
         and operator.reads_source
         and operator.arity == 0
         and "measurement" in operator.accepted_source_kinds
+        # Cross-entity operators need a declared edge to name; see the test below.
+        and not operator.cross_entity
     }
     assert expected <= generated, f"operators missing from the space: {expected - generated}"
+
+
+def test_a_cross_entity_operator_appears_only_where_an_edge_is_declared() -> None:
+    """USCRN declares no entity graph, so a cross-entity candidate there could only name an
+    edge that does not exist — the compiler would reject it with E-RESOLVE-008, and the budget
+    spent proposing it would buy nothing. Declare one and it becomes proposable."""
+    cross_entity = {
+        name
+        for name in registry.names()
+        if (operator := registry.get(name)) is not None and operator.cross_entity
+    }
+    assert cross_entity, "this test is vacuous without a registered cross-entity operator"
+
+    without = {candidate.op for candidate in enumerate_candidates(UPDATE_SOURCES, NARROW)}
+    assert not (cross_entity & without)
+
+    graphs = [EntityGraphSchema(name="neighbours", max_related_entities=4)]
+    with_edge = enumerate_candidates(UPDATE_SOURCES, NARROW, graphs)
+    assert cross_entity <= {candidate.op for candidate in with_edge}
+    assert all(
+        candidate.params["entity_ref"] == "neighbours"
+        for candidate in with_edge
+        if candidate.op in cross_entity
+    )
 
 
 def test_every_generated_candidate_compiles() -> None:

@@ -513,7 +513,8 @@ def _station_coordinates(root: Path) -> dict[tuple[float, float], str]:
     for count, (line, row) in enumerate(_rows(path), start=1):
         lat_text = _require(row, "latitude", path, line).strip()
         lon_text = _require(row, "longitude", path, line).strip()
-        found.setdefault((round(float(lat_text), 1), round(float(lon_text), 1)), f"{lat_text}:{lon_text}")
+        rounded = (round(float(lat_text), 1), round(float(lon_text), 1))
+        found.setdefault(rounded, f"{lat_text}:{lon_text}")
         if count >= STATION_COORDINATE_SCAN_LIMIT:
             break
     return found

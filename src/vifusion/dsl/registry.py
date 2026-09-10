@@ -87,6 +87,12 @@ class Operator:
         default_factory=lambda: frozenset({"measurement", "static", "label"})
     )
 
+    cross_entity: bool = False
+    """True for an operator that reduces a stream across another entity's related entities
+    (``entity_ref`` names the edge, declared on ``FeatureProgram.entity_graphs``), rather than
+    reading the instantiated entity's own stream. Declared rather than inferred from the name
+    so the compiler and the model search space can dispatch on it directly."""
+
     @property
     def all_params(self) -> frozenset[str]:
         return self.required_params | self.optional_params
@@ -139,6 +145,42 @@ def _aggregate_operator(
         batch_lowering=parity,
         parity_tolerance_ulps=tolerance,
         windowed=True,
+    )
+
+
+def _cross_entity_operator(
+    name: str,
+    aggregate: Aggregate,
+    summary: str,
+    *,
+    unit_rule: UnitRule = "preserve",
+    parity: ParityKind = "exact",
+    tolerance: int = 0,
+) -> Operator:
+    """A reduction over the latest eligible value from each of an entity's related entities.
+
+    Unlike ``_aggregate_operator``, this retains no time window of its own — it reads each
+    related entity's most recent eligible value, exactly like ``last``, and reduces across
+    however many related entities the declared edge names. So its state bound is not a
+    function of lookback and arrival rate; it is the edge's declared ``max_related_entities``,
+    checked in ``compiler/compile.py`` rather than derived here.
+    """
+    return Operator(
+        name=name,
+        summary=summary,
+        arity=0,
+        reads_source=True,
+        input_types=("number",),
+        output_type="number",
+        unit_rule=unit_rule,
+        time_direction="past_only",
+        null_policy="propagate",
+        required_params=frozenset({"source", "feature", "entity_ref"}),
+        aggregate=aggregate,
+        batch_lowering=parity,
+        parity_tolerance_ulps=tolerance,
+        windowed=False,
+        cross_entity=True,
     )
 
 
@@ -243,6 +285,13 @@ OPERATORS: dict[str, Operator] = {
         ),
         _aggregate_operator("min", Aggregate.MIN, "Minimum over the window."),
         _aggregate_operator("max", Aggregate.MAX, "Maximum over the window."),
+        _cross_entity_operator(
+            "cross_entity_mean",
+            Aggregate.MEAN,
+            "Mean of the latest eligible value across the entities named by entity_ref.",
+            parity="tolerance",
+            tolerance=4,
+        ),
         _calendar_operator(CalendarField.HOUR_OF_DAY, "Hour of day in the declared timezone."),
         _calendar_operator(CalendarField.DAY_OF_WEEK, "Day of week, Monday as zero."),
         _calendar_operator(CalendarField.DAY_OF_MONTH, "Day of month."),
