@@ -32,11 +32,13 @@ before this was built) treats every physical source as its own independent adapt
 stream, with a declared configuration saying which streams feed which entity's feature
 vector (their Section 4.1, Algorithm 3's stream set ``A``) — nothing is collapsed or
 averaged in pre-processing. :attr:`CsvSource.entity_from_key` follows that: every grid point
-becomes its own entity, ``station:{latitude}:{longitude}``, carrying its full series. What
-is declared here and not yet built is the wiring — a prosumer's feature program cannot read
-a station entity's stream until the cross-entity join :mod:`vifusion.dsl.schema` already
-names as a later phase exists. ``weather_station_to_county_mapping.csv`` is the material
-for that wiring, in the same spirit as Kenda's per-entity configuration, once it exists.
+becomes its own entity, ``station:{latitude}:{longitude}``, carrying its full series.
+:func:`station_graph` is the declared configuration itself — which station entities sit in
+a prediction unit's county, read off ``weather_station_to_county_mapping.csv`` and
+``train.csv``, in the same spirit as Kenda's per-entity stream wiring. What is not yet built
+is the consumer: a prosumer's feature program still cannot read a station entity's stream
+until the cross-entity join :mod:`vifusion.dsl.schema` already names as a later phase
+exists — the graph is ready for it, not yet wired to it.
 
 **Targets are labels, and their block is not their release.** ``train.csv`` carries the
 target, and it enters as ``label`` records in their own source, excluded from
@@ -488,6 +490,90 @@ def _owning_units(
             "prediction_unit_id mapping does not cover"
         )
     return (unit,)
+
+
+STATION_COORDINATE_SCAN_LIMIT = 5000
+"""Rows of ``historical_weather.csv`` :func:`_station_coordinates` reads before giving up.
+
+The file orders rows by timestamp then station, so every one of the archive's 112 grid
+points is seen within the first sweep — empirically, within the first 112 rows. The bound
+exists so building the graph costs a few thousand rows, not the several-hundred-megabyte
+file; :func:`station_graph` raises rather than silently returning an incomplete graph if a
+mapped station is not found within it, so a change to that ordering fails loudly."""
+
+
+def _station_coordinates(root: Path) -> dict[tuple[float, float], str]:
+    """Every grid point ``historical_weather.csv`` carries, rounded to a tenth of a degree and
+    mapped to the exact ``latitude:longitude`` string the adapter builds station entity ids
+    from — see :data:`STATION_COORDINATE_SCAN_LIMIT` on why only a prefix is read."""
+    path = root / "historical_weather.csv"
+    if not path.exists():
+        return {}
+    found: dict[tuple[float, float], str] = {}
+    for count, (line, row) in enumerate(_rows(path), start=1):
+        lat_text = _require(row, "latitude", path, line).strip()
+        lon_text = _require(row, "longitude", path, line).strip()
+        found.setdefault((round(float(lat_text), 1), round(float(lon_text), 1)), f"{lat_text}:{lon_text}")
+        if count >= STATION_COORDINATE_SCAN_LIMIT:
+            break
+    return found
+
+
+def station_graph(root: Path) -> dict[str, tuple[str, ...]]:
+    """Prediction units mapped to the weather station entities in their county.
+
+    This is the entity graph :mod:`vifusion.dsl.schema` names as the prerequisite for
+    cross-entity operators (not yet built): a caller can inspect it today, but no feature
+    program can consume it directly until those operators exist. See the module docstring's
+    "Weather is many entities" paragraph.
+
+    **Declared, not inferred.** A unit's county comes from ``train.csv`` via
+    :data:`UNIT_KEY_COLUMNS` — the same lookup :func:`_owning_units` already builds for
+    ``client.csv``. Which stations sit in that county comes from
+    ``weather_station_to_county_mapping.csv``. Measured on the real download: 49 of the 112
+    grid points are mapped to 15 of the 16 counties; county ``12`` — ``"UNKNOWN"`` in
+    ``county_id_to_name_map.json`` — has none, so a unit filed under it maps to no station
+    rather than an invented one, and callers should expect an empty tuple there.
+
+    **The mapping file's coordinates do not string-match the weather files' own.** Some of
+    its latitudes serialise as e.g. ``58.49999999999999`` for what ``historical_weather.csv``
+    writes as ``58.5`` — the same float, disagreeing repr. Matching is therefore done by
+    rounding both sides to a tenth of a degree (the grid's spacing, so this cannot conflate
+    two distinct stations) rather than by exact string equality, and the *weather file's*
+    string is what ends up in the returned entity id, because that is the string
+    :func:`_read_source` actually builds ``station:{key}`` from.
+    """
+    mapping_path = root / "weather_station_to_county_mapping.csv"
+    if not mapping_path.exists():
+        return {}
+
+    unit_lookup = _unit_lookup(root)
+    county_index = UNIT_KEY_COLUMNS.index("county")
+    unit_counties = {unit: key[county_index] for key, unit in unit_lookup.items()}
+
+    coordinates = _station_coordinates(root)
+    county_stations: dict[str, set[str]] = {}
+    for line, row in _rows(mapping_path):
+        county = _require(row, "county", mapping_path, line).strip()
+        if not county:
+            continue
+        lat_text = _require(row, "latitude", mapping_path, line).strip()
+        lon_text = _require(row, "longitude", mapping_path, line).strip()
+        rounded = (round(float(lat_text), 1), round(float(lon_text), 1))
+        canonical = coordinates.get(rounded)
+        if canonical is None:
+            raise AdapterError(
+                f"{mapping_path.name}:{line} names a grid point at "
+                f"{lat_text},{lon_text} that historical_weather.csv does not carry within "
+                f"the first {STATION_COORDINATE_SCAN_LIMIT} rows; the station-to-county "
+                "mapping and the weather archive disagree about the grid"
+            )
+        county_stations.setdefault(county, set()).add(f"station:{canonical}")
+
+    return {
+        unit: tuple(sorted(county_stations.get(county, ())))
+        for unit, county in unit_counties.items()
+    }
 
 
 def _read_source(
