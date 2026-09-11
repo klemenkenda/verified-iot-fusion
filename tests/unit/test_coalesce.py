@@ -150,7 +150,7 @@ def test_a_fallback_between_incompatible_units_is_rejected() -> None:
     assert program is not None, diagnostics
     result = compile_program(program)
     assert not result.accepted
-    assert any("either" == d.node_id for d in result.diagnostics)
+    assert any(d.node_id == "either" for d in result.diagnostics)
 
 
 @pytest.mark.parametrize("operation", ["add", "subtract", "multiply", "divide"])

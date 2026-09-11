@@ -21,7 +21,7 @@ scored makes the metric depend on the answers.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -605,6 +605,17 @@ def _candidate_matrix(
     return rows, tuple(example.target_value for example in examples)
 
 
+def _cell_progress(
+    on_progress: CellProgress, method_id: str, predictor_name: str
+) -> search.Progress:
+    """Adapt the search's (spent, budgeted) to the task's (method, predictor, done, total)."""
+
+    def report(spent: int, budgeted: int) -> None:
+        on_progress(method_id, predictor_name, spent, budgeted)
+
+    return report
+
+
 def _check_declared_edges(
     method: MethodSpec,
     bundle: DatasetBundle,
@@ -660,6 +671,7 @@ def run_search(
     *,
     predictor_name: str = "ridge",
     penalty: float = DEFAULT_RIDGE_PENALTY,
+    on_progress: search.Progress | None = None,
 ) -> tuple[ExecutionPlan, str, SearchReport, dict[str, Any]]:
     """Find a feature program by search, and return it compiled.
 
@@ -748,6 +760,7 @@ def run_search(
         matrix=columns,
         target=labels,
         unresolved=unresolved,
+        on_progress=on_progress,
     )
 
     # In the order the search chose them, not in enumeration order: for forward selection
@@ -771,6 +784,14 @@ def run_search(
     return result.plan, result.program_hash, report, document
 
 
+CellProgress = Callable[[str, str, int, int], None]
+"""Called with (method id, predictor, done, total) as a task runs.
+
+``total`` is the search budget for a searching method and 1 for a written one, so a caller can
+show one progress model for both rather than special-casing the cheap cells. ``done == total``
+means the cell is finished."""
+
+
 def run_task(
     task: TaskConfig,
     *,
@@ -778,8 +799,14 @@ def run_task(
     split_dir: Path | None = None,
     fold: Fold = "validation",
     penalty: float = DEFAULT_RIDGE_PENALTY,
+    on_progress: CellProgress | None = None,
 ) -> ExperimentResult:
-    """Run every declared method of one task and return their scores side by side."""
+    """Run every declared method of one task and return their scores side by side.
+
+    ``on_progress`` is optional instrumentation and changes nothing about what is computed. A
+    full grid takes hours on a real archive, and a caller that cannot see inside cannot tell a
+    slow search from a stuck one.
+    """
     adapter = registry.get(task.dataset)
     bundle = adapter.read(repo_root / task.root, task.options)
     split = splits.load((split_dir or repo_root / splits.SPLIT_DIR) / f"{task.split}.yaml")
@@ -803,6 +830,9 @@ def run_task(
                 )
             report: SearchReport | None = None
             document: dict[str, Any] | None = None
+            total = method.search.evaluations if method.search is not None else 1
+            if on_progress is not None:
+                on_progress(method.id, predictor_name, 0, total)
             if method.search is not None:
                 # Searched separately per predictor: the features that help a linear model
                 # are not the ones that help a tree, and each cell spends its own budget.
@@ -814,9 +844,16 @@ def run_task(
                     entities,
                     predictor_name=predictor_name,
                     penalty=penalty,
+                    on_progress=(
+                        None
+                        if on_progress is None
+                        else _cell_progress(on_progress, method.id, predictor_name)
+                    ),
                 )
             else:
                 plan, program_hash = compile_method(method, repo_root)
+            if on_progress is not None:
+                on_progress(method.id, predictor_name, total, total)
             results.append(
                 run_method(
                     method,

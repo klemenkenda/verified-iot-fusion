@@ -652,3 +652,42 @@ def test_a_candidate_null_on_every_row_is_dropped_before_the_budget_is_spent() -
 
     assert [candidate.node_id for candidate in live] == ["a", "c"]
     assert dead == 1
+
+def test_fastener_leaves_no_scratch_directory_behind() -> None:
+    """Upstream checkpoints to disk every round; a run that leaves those behind litters temp.
+
+    Nothing reads them — the Pareto front is taken from the live object — so the directory is
+    created per run and removed whether the loop ends by budget, by round bound, or by raising.
+    """
+    import tempfile as _tempfile
+
+    root = Path(_tempfile.gettempdir()) / "vifusion-fastener"
+    before = set(root.iterdir()) if root.exists() else set()
+
+    candidates, matrix, target, score = _linear_problem()
+    budget = SearchBudget(evaluations=40, max_features=3, strategy="fastener", seed=5)
+    search.search(
+        candidates, score, budget, selected_on="validation", matrix=matrix, target=target
+    )
+
+    after = set(root.iterdir()) if root.exists() else set()
+    assert after == before, f"scratch directories left behind: {sorted(after - before)}"
+
+
+def test_fastener_terminates_when_no_genome_can_spend_budget() -> None:
+    """The loop's guarantee, separated from the budget that normally ends it.
+
+    A round spends nothing when every genome it produced is cached or over the feature cap, so
+    a loop bounded only by the evaluation budget could in principle never reach it. The round
+    bound is what makes termination certain; this pins that it is set, by asking for a cap so
+    small that almost every genome is refused without charge.
+    """
+    candidates, matrix, target, score = _linear_problem(width=8)
+    budget = SearchBudget(evaluations=25, max_features=1, strategy="fastener", seed=2)
+
+    report = search.search(
+        candidates, score, budget, selected_on="validation", matrix=matrix, target=target
+    )
+
+    assert len(report.selected) == 1
+    assert report.evaluations_used <= budget.evaluations

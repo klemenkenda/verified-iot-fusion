@@ -28,9 +28,10 @@ what makes the same number about the LLM a comparison rather than an anecdote.
 from __future__ import annotations
 
 import io
+import shutil
 import tempfile
-import warnings
 import uuid
+import warnings
 from collections.abc import Callable, Sequence
 from contextlib import redirect_stdout
 from dataclasses import dataclass, field
@@ -47,6 +48,14 @@ Strategy = Literal["random", "greedy", "fastener"]
 
 Score = Callable[[Sequence[Candidate]], float]
 """Evaluates one feature subset and returns a loss: lower is better."""
+
+Progress = Callable[[int, int], None]
+"""Called with (evaluations spent, evaluations budgeted) as a search runs.
+
+A search can take minutes on a real archive, and a caller that cannot see inside it has no way
+to distinguish slow from stuck. Reporting from the one place every strategy passes through —
+the scoring callback — keeps the three strategies from each needing their own instrumentation
+and from disagreeing about what counts as progress."""
 
 
 class SearchError(ValueError):
@@ -240,7 +249,7 @@ class _StubModel:
     every evaluation and measure a model nobody asked for.
     """
 
-    def fit(self, _data: Any, _target: Any) -> "_StubModel":
+    def fit(self, _data: Any, _target: Any) -> _StubModel:
         return self
 
 
@@ -274,20 +283,27 @@ def _mutation_strategy(width: int) -> Any:
     return RandomFlipMutationStrategy(1.0 / max(width, 1))
 
 
-def _fastener_config(seed: int) -> Any:
-    """A seeded config writing to a directory that does not yet exist.
+def _fastener_config(seed: int, folder: Path, rounds: int) -> Any:
+    """A seeded config writing to a directory the caller owns and deletes.
 
-    Upstream calls ``os.makedirs(output_folder, exist_ok=False)``, so the folder must be fresh
-    per run. Nothing reads what it writes — the front is taken from the object in memory — so
-    it goes under the system temp directory rather than into the repository.
+    Upstream calls ``os.makedirs(output_folder, exist_ok=False)``, so the folder must not
+    already exist; it then checkpoints into it every round. Nothing here reads those files —
+    the front is taken from the live object — so the caller puts them under the system temp
+    directory and removes them afterwards rather than letting a run leave litter behind.
+
+    ``rounds`` is a **termination bound, not a schedule.** What normally stops this search is
+    the evaluation budget, raised from inside the evaluator. But a round spends nothing when
+    every genome it produced is cached or over the feature cap, so a loop bounded only by the
+    budget could in principle never reach it. One round per budgeted evaluation cannot
+    terminate early in practice — a round evaluates a whole mating pool — while guaranteeing
+    the loop ends.
     """
     from fastener.fastener import Config
 
-    folder = Path(tempfile.gettempdir()) / "vifusion-fastener" / uuid.uuid4().hex
     return Config(
         output_folder=str(folder),
         random_seed=seed,
-        number_of_rounds=10**6,
+        number_of_rounds=rounds,
     )
 
 
@@ -375,6 +391,7 @@ def search(
     matrix: Sequence[Sequence[float | None]] | None = None,
     target: Sequence[float] | None = None,
     unresolved: int = 0,
+    on_progress: Progress | None = None,
 ) -> SearchReport:
     """Spend the budget and return the best feature set found.
 
@@ -388,6 +405,9 @@ def search(
     """
     if not candidates:
         raise SearchError("the search space is empty after validation")
+
+    if on_progress is not None:
+        score = _reporting(score, budget.evaluations, on_progress)
 
     if budget.strategy == "random":
         selected, best, used = _random(candidates, score, budget)
@@ -412,6 +432,25 @@ def search(
         space=space.as_dict() if space else {},
         selected_profile=describe(selected),
     )
+
+
+def _reporting(score: Score, budgeted: int, on_progress: Progress) -> Score:
+    """``score``, wrapped to report how much of the budget has been spent.
+
+    Wrapping rather than threading a counter into each strategy: the three disagree about what
+    a "step" is — a greedy sweep, a random draw, a generation — but they all spend the budget
+    one scored subset at a time, which is the unit the budget is denominated in.
+    """
+    spent = 0
+
+    def reporting(subset: Sequence[Candidate]) -> float:
+        nonlocal spent
+        value = score(subset)
+        spent += 1
+        on_progress(spent, budgeted)
+        return value
+
+    return reporting
 
 
 def _random(
@@ -525,7 +564,7 @@ def _fastener(
     best_score = float("inf")
     used = 0
 
-    class _BudgetSpent(Exception):
+    class _BudgetSpentError(Exception):
         """Raised from inside the genetic loop when the frozen budget is exhausted."""
 
     def evaluator(_model: Any, genes: Sequence[bool], _shuffle: Any = None) -> Any:
@@ -536,7 +575,7 @@ def _fastener(
         if not subset or len(subset) > budget.max_features:
             return _fastener_result(_OUT_OF_SCOPE)
         if used >= budget.evaluations:
-            raise _BudgetSpent
+            raise _BudgetSpentError
         value = score(subset)
         used += 1
         if value < best_score:
@@ -544,23 +583,26 @@ def _fastener(
         return _fastener_result(-value)
 
     seeds = sorted(rng.sample(range(width), min(width, 2 * budget.max_features)))
-    optimizer = _quiet_optimizer_class()(
-        model=_StubModel,
-        train_data=columns,
-        train_target=_as_array(target),
-        evaluator=evaluator,
-        number_of_genes=width,
-        mating_selection_strategy=_mating_strategy(),
-        mutation_strategy=_mutation_strategy(width),
-        initial_genes=[[index] for index in seeds],
-        config=_fastener_config(budget.seed),
-    )
-
+    scratch = Path(tempfile.gettempdir()) / "vifusion-fastener" / uuid.uuid4().hex
     try:
-        with redirect_stdout(io.StringIO()):
-            optimizer.mainloop()
-    except _BudgetSpent:
-        pass
+        optimizer = _quiet_optimizer_class()(
+            model=_StubModel,
+            train_data=columns,
+            train_target=_as_array(target),
+            evaluator=evaluator,
+            number_of_genes=width,
+            mating_selection_strategy=_mating_strategy(),
+            mutation_strategy=_mutation_strategy(width),
+            initial_genes=[[index] for index in seeds],
+            config=_fastener_config(budget.seed, scratch, budget.evaluations),
+        )
+        try:
+            with redirect_stdout(io.StringIO()):
+                optimizer.mainloop()
+        except _BudgetSpentError:
+            pass
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
     if not best:
         raise SearchError(

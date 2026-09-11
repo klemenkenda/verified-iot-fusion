@@ -2063,3 +2063,47 @@ M3f fastener                0.0915    34.258         10
   is that the filter is worth more than the choice of strategy at this budget, and that the
   adapter runs end to end on real data.
 - **Phase / gate:** Phase 6.
+
+
+### 2026-09-11 — FASTENER hardened, and the grid gets a runner that says how long it has left
+
+- **Three defects in the FASTENER adapter, fixed.** (1) Upstream checkpoints itself to disk
+  every round; the adapter created a scratch directory per run and never removed it, so a grid
+  would have left one per cell under the system temp directory. It is now owned and deleted in
+  a `finally`. (2) `number_of_rounds` was `10**6`, which is not a bound: a round spends no
+  budget when every genome it produces is cached or over the feature cap, so a loop stopped
+  only by the evaluation budget could in principle never stop. It is now one round per budgeted
+  evaluation — a round evaluates a whole mating pool, so this cannot end a search early in
+  practice, while making termination certain. (3) The exception ending the loop was named
+  without the suffix the lint rules require.
+- **Regression tests:** `test_fastener_leaves_no_scratch_directory_behind` compares the temp
+  directory before and after, and `test_fastener_terminates_when_no_genome_can_spend_budget`
+  asks for a cap so small that almost every genome is refused without charge.
+
+- **Progress reporting, added because the grid is now hours rather than minutes.**
+  `search.search` takes an optional callback and reports through the *scoring* function — the
+  one place all three strategies pass through, and the unit the budget is denominated in, so
+  greedy sweeps, random draws and generations do not each need their own idea of a step.
+  `run_task` takes a per-cell callback and reports written methods as a single step, so a
+  caller has one progress model for both kinds. **None of it changes what is computed**: the
+  callbacks default to None and a result produced with them is the result `vifusion evaluate`
+  already produced.
+- **`tools/run_experiments.py` runs the declared grid**, with a live bar, a measured rate, a
+  per-cell ETA and a projection for the rest. `--dry-run` prints the plan and its cost without
+  running; `--resume` skips tasks already on disk; `--task` runs one file for a one-off; the
+  progress transcript is appended to `artifacts/runs/` so it survives the terminal.
+- **Setup and evaluation rate are measured separately**, which took two attempts. The first
+  version derived a per-cell overhead by subtracting modelled time from elapsed, using a rate
+  itself defined as `done / elapsed` — algebraically always zero. The rate is now measured
+  between the *first* evaluation and the latest, and setup is the time before the first. On the
+  smoke test that reads 4.3 evaluations per second after 22 seconds of setup, against the
+  pilot's 3.8/s.
+- **A projection worth correcting in public:** an earlier estimate in this log put the full
+  grid at about ten hours. That was for two searching strategies; there are now three, and the
+  arithmetic was also done with seconds-per-evaluation where evaluations-per-second belonged.
+  Measured budgets across the four Gate B tasks total 87,000 evaluations, and at the pilot rate
+  the projection is **about 7h40m**, of which Beijing is the largest single task at ~2h55m.
+  Greedy will finish well under its budget — with 51 live Enefit candidates a twelve-feature
+  forward selection needs at most ~612 evaluations, not 2,500 — so the projection is the
+  conservative direction.
+- **Phase / gate:** Phase 6.
