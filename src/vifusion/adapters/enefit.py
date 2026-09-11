@@ -360,12 +360,19 @@ def read(
     present. Global streams are broadcast to those units unless ``broadcast`` is False — see
     the module docstring on why that is a small-slice technique rather than the answer.
 
-    ``sources`` selects source ids; None reads every file present. The two weather files are
-    the expensive ones regardless — ``forecast_weather.csv`` alone is most of a gigabyte, read
-    in full because :attr:`CsvSource.entity_from_key` keeps every grid point rather than
-    picking one. Naming the sources is how a caller says which streams the result is about;
-    the bundle's notes record the choice, so a card over a slice cannot be mistaken for a card
-    over the competition.
+    ``sources`` selects source ids; None reads every file present. Naming the sources is how a
+    caller says which streams the result is about; the bundle's notes record the choice, so a
+    card over a slice cannot be mistaken for a card over the competition.
+
+    **Selecting units also selects their weather stations, and that is what makes the archive
+    readable at all.** A grid point is its own entity, so ``entities`` used to narrow the units
+    while every one of the 112 stations was still read in full: a three-unit panel needing nine
+    stations carried the other hundred and three, and an evaluation of it reached 17 GB resident
+    with 0.7 GB of the machine's memory left. The stations a unit can be read through are
+    exactly its :func:`station_graph` edge, so they are derived rather than named separately —
+    the same "scope, not time" filter USCRN's ``stations=`` is, changing which entities exist
+    and never what was knowable about them. Without a station-to-county mapping to derive them
+    from, every grid point is kept rather than none, and the bundle's notes say so.
     """
     known = {source.source_id for source in SOURCES}
     if sources is not None:
@@ -386,10 +393,22 @@ def read(
 
     unit_lookup = _unit_lookup(root)
     unit_ids = _unit_ids(root, entities, unit_lookup)
+
+    graph = station_graph(root)
+    if entities is not None and graph:
+        graph = {unit: graph.get(unit, ()) for unit in unit_ids}
+        stations: frozenset[str] | None = frozenset(
+            station for edge in graph.values() for station in edge
+        )
+    else:
+        stations = None
+
     kept: dict[str, CanonicalRecord] = {}
     superseded: list[str] = []
     for source in present:
-        for record in _read_source(root, source, schedule, unit_ids, broadcast, unit_lookup):
+        for record in _read_source(
+            root, source, schedule, unit_ids, broadcast, unit_lookup, stations
+        ):
             previous = kept.get(record.record_id)
             if previous is None:
                 kept[record.record_id] = record
@@ -402,7 +421,6 @@ def read(
                 superseded.append(record.record_id)
 
     records = tuple(sorted(kept.values(), key=lambda item: (item.available_time, item.record_id)))
-    graph = station_graph(root)
     return DatasetBundle(
         dataset=DATASET_NAME,
         version=DATASET_VERSION,
@@ -420,7 +438,10 @@ def read(
             if sources is None
             else f"sources: {sorted(wanted)} of those present",
             f"{STATION_GRAPH_NAME}: {len(graph)} units mapped to "
-            f"{len({station for stations in graph.values() for station in stations})} stations",
+            f"{len({station for edge in graph.values() for station in edge})} stations",
+            "weather stations: every grid point present"
+            if stations is None
+            else f"weather stations: {len(stations)} reached by the selected units",
         ),
         entity_graphs={STATION_GRAPH_NAME: graph},
     )
@@ -596,10 +617,16 @@ def _read_source(
     unit_ids: tuple[str, ...],
     broadcast: bool,
     unit_lookup: dict[tuple[str, ...], str],
+    stations: frozenset[str] | None = None,
 ) -> Iterator[CanonicalRecord]:
     path = root / source.filename
     for line, row in _rows(path):
         key = ":".join(_require(row, column, path, line).strip() for column in source.key_columns)
+        # Before anything else is parsed: an unselected grid point costs nothing to skip here
+        # and a record's worth of memory to skip after the fact, which on the real archive is
+        # the difference between a readable slice and an unreadable one.
+        if source.entity_from_key and stations is not None and f"station:{key}" not in stations:
+            continue
         block_text = _require(row, source.block_column, path, line).strip()
         try:
             block_id = int(float(block_text))

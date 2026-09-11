@@ -1422,3 +1422,128 @@ M2/lightgbm         2039   0.9030     1.2290     1.7131    1.330    -0.1267
 - **Made before or after viewing test results:** before — this was settled while the first
   Enefit evaluation was still running, and no Enefit score had been seen.
 - **Phase / gate:** Phase 6 — required before any Enefit entry in the results table.
+
+### 2026-09-11 — Selecting Enefit units also selects their weather stations
+
+- **Decision:** the `entities` option on the Enefit adapter now narrows the weather grid points
+  as well as the prediction units, to exactly the stations the selected units' counties contain.
+  The set is *derived* from each unit's `weather_stations` edge rather than named separately, so
+  there is no second filter to keep consistent with the first. Where no station-to-county
+  mapping is present the edge cannot be derived and every grid point is kept rather than none —
+  the safe direction, since deriving nothing from a missing file would drop every weather record
+  because a *different* file was absent. The bundle's notes say which of the two happened.
+- **Why:** a grid point is its own entity, so narrowing the units left all 112 stations in memory
+  regardless. A three-unit panel needing nine of them carried the other hundred and three, and
+  an evaluation of it reached 17 GB resident with 0.7 GB of the machine's memory free. The same
+  task after the change peaks at 1.6 GB and finishes in three minutes. This was not a tuning
+  problem: the read was unrunnable on the hardware, which is why no Enefit number existed.
+- **Rationale:** this is scope, not time — the same kind of filter USCRN's `stations=` is. It
+  changes which entities exist and never what was knowable about the ones that remain, and the
+  regression tests assert exactly that: every record surviving the slice keeps the
+  `available_time` it had in the unsliced read.
+- **Regression tests:** `test_selecting_units_reads_only_the_stations_those_units_can_reach`,
+  `test_the_published_graph_describes_the_slice_that_was_read`,
+  `test_without_a_station_mapping_every_grid_point_is_kept`.
+- **Made before or after viewing test results:** after — the 17 GB run is what exposed it.
+- **Phase / gate:** Phase 6 — a precondition for any Enefit entry in the results table.
+
+### 2026-09-11 — A pooled panel measures pooling damage, not feature engineering
+
+- **Decision:** Enefit tasks name a single prediction unit. A multi-entity panel is not used for
+  Gate B, and section 8.1's "joint reporting by county or customer segment" is recorded as
+  **blocked** rather than merely unconfigured.
+- **Why:** the runtime fits one model across every entity a task names, and nothing in the
+  feature vector says which entity a row came from. A first version of the day-ahead task ran
+  units 0, 10 and 31 together, whose median hourly consumption is 379, 474 and 17.7 kWh — a
+  factor of twenty-five. A single ridge or LightGBM had to fit one function across all three
+  while the naive floor stayed per-entity by construction, so the floor beat every fitted
+  method, biases reached +351, and M2 under LightGBM scored an R-squared of -0.72. Those
+  numbers measured the pooling, not the features.
+- **Consequence:** panel reporting needs either an entity feature or a per-entity fit, and the
+  framework has neither. Whichever is built, it is a Phase 7 item with its own entry.
+- **Affected experiments / artifacts:** the three-unit figures are discarded, not filed. They
+  are recorded here and in the task config as the reason for the single-unit design, and
+  nowhere as a result.
+- **Made before or after viewing test results:** after — the ordering inversion is what exposed
+  it, and it was diagnosed from the raw series before any config was changed.
+- **Phase / gate:** Phase 6.
+
+### 2026-09-11 — Enefit's folds do not share a level, so Gate B runs a stationary unit
+
+- **Decision:** `enefit_consumption_day_ahead` runs **unit 65**, selected by a criterion fixed
+  before any score was seen: not held out by the split; the 48-hour floor resolves at every
+  validation prediction time; validation/training mean ratio within [0.90, 1.10]; ties broken by
+  weather fan-out, largest first. Exactly two units qualify — 65 at 1.014 with four stations and
+  36 at 0.968 with three — and 65 wins both legs. Unit 0 is kept as the companion task
+  `enefit_consumption_day_ahead_growth`, reported alongside as the evidence of non-stationarity.
+- **The finding that forced it:** the level shift is dataset-wide, not a property of one unit.
+  Across all 69 units the ratio of validation-fold mean consumption to training-fold mean has a
+  **median of 1.80**; only two units fall inside [0.90, 1.10]. The Enefit prosumer population
+  grew substantially over 2021-2023 and the split boundary, correctly forward in time, cuts
+  through that growth. Unit 0 sits at 2.34, with contracted capacity rising 953 to 5,251 kW.
+- **Why it matters for the paper:** R-squared is the declared primary metric and is scored
+  against the *validation* mean, so on a growing unit every method is punished for being
+  anchored on training-era levels — predicting the training mean scores -8.43 — and the whole
+  ladder reads at or below zero however good the features are. MASE does not rescue it, since it
+  scales from training targets. Any Enefit R-squared must be read against the unit's ratio.
+- **Not a pipeline fault:** computed directly from the raw series, outside the pipeline
+  entirely, the floor's own comparison reproduces its reported figures to the digit (R-squared
+  -0.3725, MAE 147.76 on unit 0). The replay, pairing and scoring are vindicated; the difficulty
+  is in the data. The same computation prices the delayed-label regime: predicting y(t+24)
+  scores 0.31 from y(t), -0.14 from y(t-24) and -0.37 from y(t-48), and only the last is
+  available in time.
+- **Alternatives considered:** reporting unit 0 as the Enefit result and logging the caveat —
+  rejected because Gate B asks whether the *baselines* are credible, and a unit whose metric is
+  dominated by a level shift cannot answer that either way. Changing the primary metric to a
+  scale-relative one — deferred: it is a protocol change affecting all three datasets and should
+  not be driven by one dataset's inconvenience.
+- **Made before or after viewing test results:** the non-stationarity was found *after* seeing
+  unit 0's scores and is what prompted the search. The **selection criterion was declared before
+  any score on any candidate unit was computed**, and no candidate has been evaluated other than
+  the one it names.
+- **Risk accepted:** unit 65 is small — mean hourly consumption 56 kWh against unit 0's 841 — so
+  it is a credibility check rather than a headline result, and the margin between methods on it
+  should not be generalised to the population.
+- **Phase / gate:** Phase 6, Gate B.
+
+### 2026-09-11 — Gate B on Enefit: the ladder is credible, and M2 clears M1 by a wide margin
+
+- **What was run:** `enefit_consumption_day_ahead` (unit 65) and its companion
+  `enefit_consumption_day_ahead_growth` (unit 0), validation fold, run id
+  `20260911T084327Z-c936e3ad` and `20260911T084646Z-50e522f7`. Figures for M1 and M2 are
+  in-sample — features were selected on the fold they are scored on — and the comparison between
+  methods belongs on the test fold. Read as a credibility check, not as a result.
+
+```
+unit 65 (stationary, ratio 1.014)        unit 0 (growing, ratio 2.34)
+method            R2      MAE    RMSE    MASE  |     R2      MAE     RMSE   MASE
+M0/identity   0.5765  14.6796  27.855   2.744  | -0.3725  147.755  191.23  5.405
+M1/ridge      0.1635  33.9893  39.148   6.354  | -0.3424  155.467  189.12  5.687
+M1/lightgbm   0.0125  37.8520  42.535   7.076  | -0.6247  179.801  208.06  6.577
+M2/ridge      0.6172  20.4822  26.484   3.829  |  0.0457  124.553  159.46  4.556
+M2/lightgbm   0.3468  30.0925  34.594   5.626  | -0.2150  148.358  179.92  5.427
+```
+
+- **The ladder is credible on the stationary unit.** Every method scores a positive R-squared,
+  biases are small and unsigned rather than systematic, and the ordering is the one the design
+  predicts. Nothing here resembles the pooled-panel run, which is the confirmation that entry
+  was looking for.
+- **M2 clears M1 decisively, on both predictors:** 0.617 against 0.164 under ridge, 0.347
+  against 0.013 under LightGBM. This is the first dataset where the expert program separates
+  cleanly from raw-values-plus-calendar, and it matters for H1: on USCRN the expert bar sits
+  barely above the trivial one, which threatens the hypothesis from the opposite side. One
+  in-sample fold on one small unit is not the answer, but it is the first evidence that the bar
+  is a real bar.
+- **The floor is not beaten outright, and the split is informative.** M2/ridge wins R-squared
+  (0.617 vs 0.577) and RMSE (26.48 vs 27.85); M0 wins MAE (14.68 vs 20.48) and MASE (2.744 vs
+  3.829). Lower MAE with higher RMSE means the floor is usually closer and occasionally much
+  further off, while M2 is more consistent — a plausible signature for persistence against a
+  weather-fed model, and a thing to check rather than assume on the test fold.
+- **Ridge beats LightGBM at both M1 and M2 here**, consistent with the small training fold
+  (8,734 rows) and with what USCRN showed.
+- **The companion unit behaves exactly as the non-stationarity entry predicts:** the whole
+  ladder at or below zero, and M2/ridge the only method above it — the only one carrying
+  `load_factor`, the capacity-normalised feature that should absorb capacity-driven growth. Its
+  bias is 6.1 against -70 to -164 for the methods without it. Suggestive on one unit, no more.
+- **Made before or after viewing test results:** after; this entry records them.
+- **Phase / gate:** Phase 6, Gate B — the Enefit half.

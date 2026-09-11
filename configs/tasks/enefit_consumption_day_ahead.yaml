@@ -30,6 +30,10 @@ options:
   # forecast half is not read by any method here, so naming the sources keeps the read to
   # what the task needs rather than the whole competition.
   sources: enefit_target,enefit_client,enefit_electricity,enefit_weather_actual
+  # The same unit named below, given to the *adapter* rather than only to the runner: this
+  # narrows the read itself, and with it the weather grid points, to the four stations this
+  # unit's county contains instead of all 112.
+  entities: "65"
 
 target_source: enefit_target
 target_feature: target_consumption
@@ -38,17 +42,48 @@ prediction_interval: PT1H
 
 split: enefit_primary
 
-# A small panel rather than all 69 units, for the same reason the USCRN Gate B task runs one
-# station: this is a credibility check on the baselines, and 69 units on an hourly grid buys
-# precision the question does not need.
+# One unit, for the same reason the USCRN Gate B task runs one station — and here for two
+# further reasons, both found by running the alternatives.
 #
-# The three are chosen to vary the thing this task is here to exercise — how many weather
-# entities a unit reads through. Measured on the real archive: unit 7 maps to one station,
-# units 20 and 41 to four each. Units 9 and 15 are excluded because the split holds them out
-# for the transfer question, and unit 49 because its county is the unrecorded "UNKNOWN" and it
-# maps to no station at all; it is the right subject for a later test of that case, not for a
-# first credibility check.
-entities: ["7", "20", "41"]
+# **A panel is not free: one model is fitted across every entity named here, and nothing in the
+# feature vector says which entity a row came from.** A first version of this task ran units 0,
+# 10 and 31 together. Their median hourly consumption is 379, 474 and 17.7 kWh — a factor of
+# twenty-five — so a single ridge or LightGBM had to fit one function across all three, while
+# the naive floor stayed per-entity by construction and beat every fitted method. M2 under
+# LightGBM reached an R-squared of -0.72 with a bias of +351. None of that was about feature
+# engineering; it was about pooling entities a pooled model cannot tell apart. Reporting by
+# county or customer segment (section 8.1) needs either an entity feature or a per-entity fit,
+# and neither exists yet.
+#
+# **The unit is chosen for level stationarity, and that choice is a declared criterion rather
+# than a preference.** Measured over all 69 units, the ratio of validation-fold mean to
+# training-fold mean has a median of 1.80: the Enefit prosumer population grew substantially
+# across 2021-2023, and the split boundary — correctly forward in time — cuts through that
+# growth. R-squared is scored against the validation mean, so on a growing unit every method
+# is punished for being anchored on training-era levels, and the metric reads near zero or
+# negative however good the features are. That is a property of the dataset, not of the
+# method, and a credibility check cannot be run through it.
+#
+# The criterion, fixed before any score was seen: not held out by the split; the 48-hour floor
+# resolves at every validation prediction time (no gap in the validation window pushed back 72
+# hours); validation/training mean ratio within [0.90, 1.10]; ties broken by weather fan-out,
+# largest first, since cross-entity reading is what this task exists to exercise. Exactly two
+# units qualify — 65 at ratio 1.014 with four stations, and 36 at 0.968 with three — and unit
+# 65 wins both legs. Unit 47 looks stationary at 0.960 but has 1,224 missing hours in the
+# window the floor must reach; unit 10 is complete but sits at 0.805.
+#
+# Unit 0, whose ratio is 2.34, is kept as the companion task in
+# configs/tasks/enefit_consumption_day_ahead_growth.yaml. Read the two together: this file asks
+# whether the baselines are credible, that one shows what the growth regime does to them.
+#
+# Measured over all 69 units: 63 have a series complete enough that a 48-hour seasonal lag
+# resolves at every validation prediction time, and 6 do not. An earlier panel included unit 41,
+# whose series is 6,072 hours out of 14,928 and which ends two weeks early; the floor was null
+# at 168 of 1,248 prediction times and the run refused it, correctly, as a filter rather than a
+# floor. Units 9 and 15 are held out by the split for the transfer question. Unit 49's county is
+# the unrecorded "UNKNOWN" so it maps to no station at all; it has a complete series and is the
+# right subject for a later test of the null-weather case.
+entities: ["65"]
 
 predictors: [ridge, lightgbm]
 

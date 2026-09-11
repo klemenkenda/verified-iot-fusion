@@ -241,6 +241,82 @@ def test_a_station_that_is_in_no_file_is_an_error_not_an_empty_bundle() -> None:
 # --- reading a slice of the sources, not only of the entities --------------------------------
 
 
+def _two_county_archive(root) -> None:  # type: ignore[no-untyped-def]
+    """A minimal archive with two counties, two units, and one grid point each."""
+    (root / "train.csv").write_text(
+        "county,is_business,product_type,target,is_consumption,datetime,data_block_id,"
+        "row_id,prediction_unit_id\n"
+        "0,0,1,1.0,1,2021-09-01 09:00:00,1,0,7\n"
+        "1,0,1,2.0,1,2021-09-01 09:00:00,1,1,8\n",
+        encoding="utf-8",
+    )
+    (root / "weather_station_to_county_mapping.csv").write_text(
+        "county_name,longitude,latitude,county\nHarjumaa,25.5,59.0,0\nTartumaa,26.5,58.0,1\n",
+        encoding="utf-8",
+    )
+    (root / "historical_weather.csv").write_text(
+        "datetime,temperature,shortwave_radiation,latitude,longitude,data_block_id\n"
+        "2021-09-01 09:00:00,14.2,320.0,59.0,25.5,1\n"
+        "2021-09-01 09:00:00,11.1,300.0,58.0,26.5,1\n",
+        encoding="utf-8",
+    )
+
+
+def test_selecting_units_reads_only_the_stations_those_units_can_reach(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Scope, not time — and the filter that makes the real archive readable at all.
+
+    A grid point is its own entity, so narrowing the units used to leave all 112 stations in
+    memory regardless: a three-unit panel needing nine of them carried the other hundred and
+    three, and an evaluation reached 17 GB resident with 0.7 GB of the machine's memory free.
+    The stations a unit can be read through are exactly its ``station_graph`` edge, so they are
+    derived from the selection rather than named separately.
+    """
+    from tests.adapters.conftest import BLOCK_SCHEDULE
+
+    _two_county_archive(tmp_path)
+    whole = enefit.read(tmp_path, schedule=BLOCK_SCHEDULE)
+    sliced = enefit.read(tmp_path, schedule=BLOCK_SCHEDULE, entities=["7"])
+
+    assert {"station:59.0:25.5", "station:58.0:26.5"} <= {r.entity_id for r in whole.records}
+    stations = {r.entity_id for r in sliced.records if r.entity_id.startswith("station:")}
+    assert stations == {"station:59.0:25.5"}, "the other county's grid point was still read"
+
+    # Scope, not time: every record that survives keeps the availability it had.
+    kept = {r.record_id: r for r in whole.records}
+    for record in sliced.records:
+        assert record.available_time == kept[record.record_id].available_time
+    assert any("weather stations: 1 reached" in note for note in sliced.notes)
+
+
+def test_the_published_graph_describes_the_slice_that_was_read(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """An edge naming an entity the log does not contain would be a join that cannot resolve."""
+    from tests.adapters.conftest import BLOCK_SCHEDULE
+
+    _two_county_archive(tmp_path)
+    sliced = enefit.read(tmp_path, schedule=BLOCK_SCHEDULE, entities=["7"])
+    graph = sliced.entity_graphs[enefit.STATION_GRAPH_NAME]
+    assert set(graph) == {"7"}
+    present = {record.entity_id for record in sliced.records}
+    for stations in graph.values():
+        assert set(stations) <= present
+
+
+def test_without_a_station_mapping_every_grid_point_is_kept(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The safe direction when the edge cannot be derived: keep the data, and say so.
+
+    Deriving no stations from a missing mapping and then reading none of them would drop every
+    weather record because a *different* file was absent, which is the silent kind of loss.
+    """
+    from tests.adapters.conftest import BLOCK_SCHEDULE
+
+    _two_county_archive(tmp_path)
+    (tmp_path / "weather_station_to_county_mapping.csv").unlink()
+    sliced = enefit.read(tmp_path, schedule=BLOCK_SCHEDULE, entities=["7"])
+    stations = {r.entity_id for r in sliced.records if r.entity_id.startswith("station:")}
+    assert stations == {"station:59.0:25.5", "station:58.0:26.5"}
+    assert any("every grid point present" in note for note in sliced.notes)
+
+
 def test_naming_sources_reads_only_those() -> None:
     """Scope again, and for a blunter reason than the station filter.
 

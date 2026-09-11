@@ -178,12 +178,16 @@ ADAPTERS: dict[str, DatasetAdapter] = {
             ),
             "first_release": "the instant that block was released, timezone-aware",
             "block_interval": "spacing between block releases, default 1d",
-            "entities": "comma-separated prediction_unit_id values",
+            "entities": (
+                "comma-separated prediction_unit_id values; also narrows the weather grid "
+                "points read to those the selected units' counties contain, which is what "
+                "makes the real archive readable in memory"
+            ),
             "broadcast": "replicate global streams into each unit, default true",
             "sources": (
                 "comma-separated source ids to read, default every file present; the two "
-                "weather sources are not yet readable per prosumer and are expensive, so a "
-                "usable slice names the others"
+                "weather files are the expensive ones, so a slice that does not need the "
+                "forecast half should say which sources it is about"
             ),
         },
     ),
