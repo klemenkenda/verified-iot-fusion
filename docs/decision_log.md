@@ -1851,3 +1851,58 @@ Beijing M1/ridge        0.0544   40.1230  | Enefit  M1/ridge  -0.3424  155.4665
   Beijing program reads one pollutant where the station reports four, and the Enefit program has
   lost its only forward-looking source; both point at the second explanation.
 - **Phase / gate:** Phase 6, Gate B.
+
+### 2026-09-11 — `load_factor` does not explain M2's Enefit margin: the cross-stream hypothesis is dead
+
+- **The hypothesis, and why it was worth testing.** M2 clears M1 decisively on Enefit and fails
+  to clear it on USCRN and Beijing. `load_factor` — consumption divided by contracted capacity —
+  is the only **cross-stream** combination in any of the three expert programs, and
+  `models/search_space.py` generates arithmetic *within one stream only*, saying so explicitly:
+  "cross-stream arithmetic is where the interesting domain features live... but it is also where
+  the space explodes." If M2's margin rested on that ratio, then the one place the human bar
+  clears raw-plus-calendar would be exactly the place enumeration declines to go, and H1 could
+  be restated as a claim about cross-stream fusion rather than about expertise in general.
+- **Two arms, testing it from both sides.** `M2-lf` is M2 with the ratio removed and nothing
+  else changed — `consumption_now` and `capacity` both stay, as separate columns, so the ratio
+  and not its inputs is what is ablated. `M1+lf` is M1 with the ratio added and nothing else;
+  both inputs were already M1 columns, so the quotient is the only addition.
+
+```
+unit 65 (stationary)              R2       MAE   |  unit 0 (growing)       R2       MAE
+M1/ridge                      0.1635   33.9893   |  M1/ridge          -0.3424   155.4665
+M1+lf/ridge                   0.1507   34.2271   |  M1+lf/ridge       -0.2695   150.0663
+M2-lf/ridge                   0.6189   20.3622   |  M2-lf/ridge        0.0329   126.3716
+M2/ridge                      0.6172   20.4822   |  M2/ridge           0.0457   124.5534
+```
+
+- **The hypothesis is refuted.** On the stationary unit, removing `load_factor` from M2 changes
+  nothing — 0.6189 against 0.6172, *slightly better* without it — and adding it to M1 changes
+  nothing, 0.1507 against 0.1635, slightly worse. The entire margin, R-squared 0.16 to 0.62,
+  survives the ablation intact. On the growing unit the ratio does something real but small: M2
+  loses 0.013 without it and M1 gains 0.073 with it, against a gap of 0.388. It closes under a
+  fifth of the distance on the unit it was predicted to matter most, and none of it on the other.
+- **The earlier suggestion that pointed this way was weak evidence and should not have been
+  leaned on.** On 2026-09-10 M2/ridge was the only method above zero on unit 0 and the only one
+  carrying `load_factor`; that co-occurrence is now explained — M2 is above zero on that unit
+  *without* the ratio too.
+- **What actually carries the margin is within-stream, which is the finding that matters.**
+  M2-lf still holds twelve features to M1's six, and every one of the extras reads the
+  consumption stream alone: a 48-hour lag, 24-hour and 7-day means, a 7-day standard deviation,
+  staleness, and a trend that is one within-stream subtraction. All of those are inside the
+  declared search space — the window and lag grids generate them, and `subtract`/`divide` within
+  a stream generate the trend.
+- **So the sharper prediction runs the other way, and it is falsifiable.** If M2's advantage on
+  Enefit is within-stream autoregressive engineering, **M3 should match or beat M2 there**,
+  because enumeration can reach everything M2 has. Should that hold, the human bar is reachable
+  by search on all three datasets and H1's premise is in serious trouble; should M3 fall short
+  of M2 on a space that provably contains M2's features, the interesting question becomes why
+  greedy and random search fail to find them within the frozen budget — which is a claim about
+  search efficiency, and one an LLM proposer could plausibly beat. Either outcome is worth more
+  than the ablation that produced it.
+- **Made before or after viewing test results:** the hypothesis was formed after seeing the Gate
+  B tables and was tested immediately; both arms were declared before either was run, and both
+  are reported whichever way they came out.
+- **Status of the arms:** `M1+lf` and `M2-lf` stay in both Enefit task configs as ablation arms,
+  labelled as such. Neither is a baseline; `M1+lf` in particular is a feature hand-picked after
+  seeing M2 win, and reporting it as a baseline would be a rigged comparison.
+- **Phase / gate:** Phase 6, Gate B — and the motivation for running M3 next.

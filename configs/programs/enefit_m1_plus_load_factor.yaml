@@ -1,0 +1,115 @@
+# M1 plus `load_factor`, and nothing else changed: the other half of the ablation.
+#
+# Everything below is `enefit_m1_raw_calendar.yaml` verbatim plus the consumption/capacity
+# ratio M2 carries. Both of its inputs were already here as raw columns, so the single thing
+# this arm adds over M1 is the *quotient*.
+#
+# The pair of arms answers the question from both sides. `enefit_consumption_no_load_factor`
+# asks whether M2 still clears M1 without the ratio; this asks whether M1 recovers M2's margin
+# with nothing but the ratio added. If the first collapses and the second recovers, then the
+# expert program's advantage on this dataset *is* one cross-stream ratio -- and cross-stream
+# arithmetic is exactly what the automated search of section 9.1 declines to enumerate.
+#
+# Note what this arm is not: it is not a new baseline and must not be reported as one. It
+# exists to attribute M2's margin. Adding a hand-picked feature to M1 after seeing M2 win
+# would be a rigged comparison if it were read any other way.
+#
+# ---------------------------------------------------------------------------------------
+#
+# M1 — raw current values plus calendar features, for Enefit (section 9.1).
+#
+# The minimal deterministic baseline: whatever each stream last said, and what time it is. No
+# windows, no aggregates, no domain knowledge. Its job is to sit between the naive floor and
+# the expert program so that M2's margin can be attributed to *engineered* features rather
+# than to having a fitted model at all.
+#
+# It reads the same four sources M2 does, so the comparison isolates the feature engineering
+# and not the choice of inputs. That includes weather through the declared `weather_stations`
+# edge: reading a raw value is not the same as reading it from the wrong entity, and a
+# baseline that silently returned null for temperature would flatter M2 rather than bound it.
+schema_version: "0.1.0"
+name: enefit_m1_plus_load_factor
+
+sources:
+  - source_id: enefit_target
+    feature_name: target_consumption
+    kind: label
+    value_type: number
+    unit: kilowatt_hour
+    max_input_rate_per_hour: 4
+    description: Hourly consumption, revealed two blocks after the block that asked for it.
+
+  - source_id: enefit_weather_actual
+    feature_name: temperature
+    kind: measurement
+    value_type: number
+    unit: degC
+    max_input_rate_per_hour: 4
+    description: Measured weather at a grid point.
+
+  - source_id: enefit_client
+    feature_name: installed_capacity
+    kind: static
+    value_type: number
+    unit: kilowatt
+    max_input_rate_per_hour: 4
+    description: Installed capacity of a prediction unit.
+
+entity_graphs:
+  - name: weather_stations
+    max_related_entities: 6
+    description: The weather grid points sitting in a prediction unit's county.
+
+nodes:
+  - id: consumption_now
+    op: last
+    params: {source: enefit_target, feature: target_consumption}
+
+  - id: county_temp
+    op: cross_entity_mean
+    params:
+      source: enefit_weather_actual
+      feature: temperature
+      entity_ref: weather_stations
+
+  # **No price feature, and the reason is measured rather than assumed.** Both programs
+  # carried `price_fc_24h` — the electricity price for the hour being predicted — until
+  # 2026-09-11, when a run refused it as a feature null in every row of every fold. Under the
+  # declared block schedule a day's prices arrive at 11:00 local on the day they apply, so the
+  # furthest ahead this stream reaches is the end of that same day. Measured over the 1,248
+  # validation prediction times, a forward price resolves at 54.2% of them at a one-hour lead,
+  # 33.3% at six hours, 8.3% at twelve, and **0% at eighteen hours or beyond**. A day-ahead
+  # task cannot know the price of the hour it predicts, and the node claiming otherwise was
+  # contributing nothing while inflating the feature count. Reinstating it at a lead the
+  # stream can actually reach would add a genuinely forward-looking source back to this
+  # program at roughly half coverage; that is a change to the expert baseline and belongs
+  # with that decision, not with a defect repair. See docs/decision_log.md, 2026-09-11.
+
+  - id: capacity
+    op: last
+    params: {source: enefit_client, feature: installed_capacity}
+
+  # The one addition over M1. Units divide to hours, which is what the compiler
+  # assigns -- a quantity per unit of capacity, not a second temperature.
+  - id: load_factor
+    op: divide
+    inputs: [consumption_now, capacity]
+
+  - id: hour
+    op: hour_of_day
+    params: {timezone: Europe/Tallinn}
+  - id: day_of_year
+    op: day_of_year
+    params: {timezone: Europe/Tallinn}
+  - id: weekend
+    op: is_weekend
+    params: {timezone: Europe/Tallinn}
+
+outputs:
+  - consumption_now
+  - county_temp
+  - capacity
+  - load_factor
+  - hour
+  - day_of_year
+  - weekend

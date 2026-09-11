@@ -1,0 +1,180 @@
+# M2 with `load_factor` removed, and nothing else changed: the ablation arm.
+#
+# Everything below is `enefit_consumption.yaml` verbatim except that the consumption/capacity
+# ratio is gone. `consumption_now` and `capacity` both remain, as separate features, so this
+# is a test of the **ratio** specifically rather than of the sources it reads: no linear model
+# can form a quotient from two columns, and a depth-limited tree approximates one badly.
+#
+# Why this arm exists. M2 clears M1 decisively on Enefit and fails to clear it on USCRN and
+# Beijing, and `load_factor` is the one feature that plausibly explains the difference -- it is
+# the only *cross-stream* combination in any of the three expert programs, and the automated
+# search of section 9.1 generates arithmetic within one stream only. If the margin collapses
+# without it, the expert bar on this dataset rests on a single cross-stream ratio, which is a
+# sharper and more testable claim than "engineered features help here".
+#
+# Read beside configs/programs/enefit_m1_plus_load_factor.yaml, which is the same question
+# asked from the other side.
+#
+# ---------------------------------------------------------------------------------------
+#
+# A hand-written feature program for one Enefit prediction unit.
+#
+# The heterogeneous fusion of section 8.1 in miniature: the unit's own consumption history, a
+# measured weather stream belonging to other entities, a static contract fact, and date/time
+# features, combined into one vector for one prosumer.
+#
+# **The consumption history is read from the label source, and that is not a leak.** Consumption
+# exists in this dataset only as `enefit_target` — there is no measured stream carrying it — so
+# any autoregressive feature has to read it. What makes it safe is the revelation lag: a target
+# row's `data_block_id` names the block that *asked* for the prediction and the answer comes back
+# two blocks later, so the replay clock releases a value long after the hour it describes, and
+# every window below reaches back from a point 11 to 35 hours stale rather than from now. The
+# label source stays excluded from the *search* surface, which is a different question: what a
+# proposer may be offered, not what a hand-written program may read.
+#
+# **Weather belongs to other entities than the prosumer.** The archive's 112 grid points are
+# 112 entities, not 112 rows of one prosumer's stream, so temperature is reached through the
+# declared `weather_stations` edge — the county's stations, averaged — rather than read off
+# this unit directly. An earlier version of this file read `enefit_weather_actual` as if the
+# unit owned it; that compiled cleanly and returned null for every weather feature, which is
+# why the edge is declared here and named by the node rather than left implicit.
+#
+# **There is no forward-looking source left in this program, and that is a loss worth naming.**
+# The price node was removed on 2026-09-11 as a feature null in every row — see the comment at
+# its former position for the measurement. Forecast *selection by issue* is the single most
+# distinctive thing this framework does, and with the price gone the only remaining candidate
+# on this dataset is the archived weather forecast, which `cross_entity_mean` still refuses.
+# So Enefit currently demonstrates three availability shapes rather than four, and the section
+# 8.1 claim should be read at that strength until one of the two is restored.
+#
+# **What is missing, and why it is missing rather than approximated.** The original program
+# also carried a 24-hour weather mean, a weather staleness, and a weather forecast. Each needs
+# a cross-entity operator that does not exist yet — respectively a windowed aggregate across
+# entities, a staleness across entities, and a forecast across entities; `cross_entity_mean`
+# refuses a forecast source with E-TIME-003 rather than silently reading one grid point. They
+# are left out rather than faked, and this program is correspondingly a thinner M2 than the
+# USCRN one.
+schema_version: "0.1.0"
+name: enefit_consumption_no_load_factor
+
+sources:
+  - source_id: enefit_target
+    feature_name: target_consumption
+    kind: label
+    value_type: number
+    unit: kilowatt_hour
+    max_input_rate_per_hour: 4
+    description: Hourly consumption, revealed two blocks after the block that asked for it.
+
+  - source_id: enefit_weather_actual
+    feature_name: temperature
+    kind: measurement
+    value_type: number
+    unit: degC
+    max_input_rate_per_hour: 4
+    description: Measured weather at a grid point.
+
+  - source_id: enefit_client
+    feature_name: installed_capacity
+    kind: static
+    value_type: number
+    unit: kilowatt
+    max_input_rate_per_hour: 4
+    description: Installed capacity of a prediction unit.
+
+# The edge this program reads weather through. The name is the contract with the adapter,
+# which publishes it as enefit.STATION_GRAPH_NAME; the bound is what lets the compiler size
+# the state a cross-entity read costs.
+#
+# Six is measured, not rounded: across the real archive's 69 prediction units the fan-out runs
+# 0, 1, 2, 3, 4, 5, 6 stations, and 6 is the largest. One unit sits in county 12 — "UNKNOWN" in
+# county_id_to_name_map.json — and maps to no station at all, so its county_temp is null at
+# every prediction time. That is the honest reading of a unit whose county nobody recorded, and
+# it is visible in the feature rather than hidden by falling back to a nearby station.
+entity_graphs:
+  - name: weather_stations
+    max_related_entities: 6
+    description: The weather grid points sitting in a prediction unit's county.
+
+nodes:
+  # --- the consumption history itself, engineered ------------------------------------------
+  # M1 reads this stream raw; the difference between the two is what M2's margin measures.
+  # Every one of these is bounded by the revelation lag, so the freshest value here is 11 to
+  # 35 hours old — the windows below reach back from that, not from the prediction time.
+  - id: consumption_now
+    op: last
+    params: {source: enefit_target, feature: target_consumption}
+  - id: consumption_same_hour_2d
+    op: lag
+    params: {source: enefit_target, feature: target_consumption, lag: 48h}
+  - id: consumption_mean_24h
+    op: mean
+    params: {source: enefit_target, feature: target_consumption, window: 24h}
+  - id: consumption_mean_7d
+    op: mean
+    params: {source: enefit_target, feature: target_consumption, window: 7d}
+  - id: consumption_sd_7d
+    op: stddev
+    params: {source: enefit_target, feature: target_consumption, window: 7d}
+
+  # How stale the delivered history is. On this dataset it is never zero, and how far it is
+  # from zero is the delayed-label regime made into a feature the model can condition on.
+  - id: consumption_age
+    op: staleness
+    params: {source: enefit_target, feature: target_consumption}
+
+  # --- the other sources -------------------------------------------------------------------
+  # The county's measured temperature: every station in it, averaged, each contributing the
+  # latest reading that had actually been delivered at the prediction time.
+  - id: county_temp
+    op: cross_entity_mean
+    params:
+      source: enefit_weather_actual
+      feature: temperature
+      entity_ref: weather_stations
+
+  # **No price feature, and the reason is measured rather than assumed.** Both programs
+  # carried `price_fc_24h` — the electricity price for the hour being predicted — until
+  # 2026-09-11, when a run refused it as a feature null in every row of every fold. Under the
+  # declared block schedule a day's prices arrive at 11:00 local on the day they apply, so the
+  # furthest ahead this stream reaches is the end of that same day. Measured over the 1,248
+  # validation prediction times, a forward price resolves at 54.2% of them at a one-hour lead,
+  # 33.3% at six hours, 8.3% at twelve, and **0% at eighteen hours or beyond**. A day-ahead
+  # task cannot know the price of the hour it predicts, and the node claiming otherwise was
+  # contributing nothing while inflating the feature count. Reinstating it at a lead the
+  # stream can actually reach would add a genuinely forward-looking source back to this
+  # program at roughly half coverage; that is a change to the expert baseline and belongs
+  # with that decision, not with a defect repair. See docs/decision_log.md, 2026-09-11.
+
+  - id: capacity
+    op: last
+    params: {source: enefit_client, feature: installed_capacity}
+
+  # How far the recent day sits from the recent week: a cheap trend that a level alone hides.
+  - id: consumption_trend
+    op: subtract
+    inputs: [consumption_mean_24h, consumption_mean_7d]
+
+  - id: hour
+    op: hour_of_day
+    params: {timezone: Europe/Tallinn}
+  - id: day_of_year
+    op: day_of_year
+    params: {timezone: Europe/Tallinn}
+  - id: weekend
+    op: is_weekend
+    params: {timezone: Europe/Tallinn}
+
+outputs:
+  - consumption_now
+  - consumption_same_hour_2d
+  - consumption_mean_24h
+  - consumption_mean_7d
+  - consumption_sd_7d
+  - consumption_age
+  - county_temp
+  - capacity
+  - consumption_trend
+  - hour
+  - day_of_year
+  - weekend

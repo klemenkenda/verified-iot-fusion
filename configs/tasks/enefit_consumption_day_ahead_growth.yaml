@@ -89,6 +89,28 @@ methods:
       averaged weather through the declared entity graph, and consumption normalised by
       contracted capacity. The human bar H1 must clear.
 
+  - id: M1+lf
+    program: configs/programs/enefit_m1_plus_load_factor.yaml
+    description: >-
+      Ablation arm, not a baseline. M1 with one feature added: `load_factor`, the
+      consumption/capacity ratio. Both of its inputs are already M1 columns, so the only
+      thing this adds is the quotient.
+
+  - id: M2-lf
+    program: configs/programs/enefit_consumption_no_load_factor.yaml
+    description: >-
+      Ablation arm, not a baseline. M2 with `load_factor` removed and nothing else changed;
+      `consumption_now` and `capacity` both remain as separate columns, so this isolates the
+      ratio rather than the sources it reads.
+
+      The pair exists because M2 clears M1 decisively here and fails to clear it on USCRN and
+      Beijing, and `load_factor` is the one plausible explanation: it is the only cross-stream
+      combination in any of the three expert programs, and section 9.1's automated search
+      generates arithmetic within a single stream only. If M2 needs it and M1 is nearly
+      repaired by it, the expert bar on this dataset is one cross-stream ratio -- which is a
+      sharper claim than "engineered features help", and one the searching methods can be
+      tested against directly.
+
 rationale: >-
   A result that says "every method scores at or below zero" is worth reporting only if it is
   accompanied by the reason, and the reason is measurable: the fold boundary crosses a growth
