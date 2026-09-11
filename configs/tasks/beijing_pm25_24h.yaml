@@ -18,9 +18,15 @@
 # multi-station panel measures pooling rather than feature engineering. Aotizhongxin is an
 # urban site and is not among the two the split holds out for transfer.
 #
-# The searching methods are deliberately absent, as in the USCRN and Enefit Gate B tasks:
-# Phase 6 asks whether the *baselines* are credible. M3 and M3r cost two full budgets per
-# predictor and answer a Phase 7 question.
+# The searching methods were absent from this file until 2026-09-11, on the reasoning that
+# Phase 6 asks whether the *baselines* are credible and M3 answers a later question. That was
+# wrong in one respect worth recording: M3 *is* a baseline -- section 9.1 names it as the one
+# H1 actually has to clear -- and M2 turned out to be level with M1 on two of three datasets,
+# which makes the question of whether an automated search can reach the expert bar a Phase 6
+# credibility question rather than a Phase 7 one. They are declared below. What stays a later
+# question is the comparison that decides H1, which happens on the test fold after the Gate C
+# freeze; every number this file produces on validation is in-sample for the searching and
+# tuned methods and is marked as such.
 schema_version: "0.1.0"
 name: beijing_pm25_24h
 
@@ -120,6 +126,24 @@ methods:
       The same budget spent at random rather than greedily. Reported beside M3 because
       "random search over a well-designed registry" is the phrase a reviewer will have in
       mind, and the two are different baselines rather than two names for one.
+
+  - id: M3f
+    search:
+      strategy: fastener
+      evaluations: 6000
+      max_features: 12
+      seed: 20260911
+      space:
+        timezone: Asia/Shanghai
+    description: >-
+      FASTENER (`koprivec2020fastener`), the multiobjective genetic selection of the
+      predecessor research line, spending the same budget as M3 and M3r. Its crossover weights
+      features by mutual information and it keeps a Pareto front indexed by feature count, so
+      unlike forward selection it is not committed to its early choices -- which is the
+      property that should matter when the budget buys only a few full sweeps of the space.
+
+      Run through the authors' own pinned package rather than a reimplementation, so that a
+      result reported under this name is the published algorithm. See docs/decision_log.md.
 
 rationale: >-
   This dataset earns its place by being the one where availability is *not* recorded, and the

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -22,9 +23,9 @@ from vifusion.adapters.splits import SplitManifest
 from vifusion.dsl import registry
 from vifusion.dsl.schema import EntityGraphSchema
 from vifusion.evaluation import experiment
-from vifusion.evaluation.tasks import MethodSpec, TaskConfig
+from vifusion.evaluation.tasks import Example, MethodSpec, TaskConfig
 from vifusion.models import search
-from vifusion.models.search import SearchBudget, SearchError
+from vifusion.models.search import Score, SearchBudget, SearchError
 from vifusion.models.search_space import (
     Candidate,
     SearchSpace,
@@ -517,3 +518,137 @@ def _searching_method(space: dict[str, object]) -> MethodSpec:
             "space": {**SEARCH_SPACE, **space},
         },
     )
+
+# --- FASTENER ----------------------------------------------------------------------------------
+
+
+def _linear_problem(
+    width: int = 12, rows: int = 200, seed: int = 0
+) -> tuple[tuple[Candidate, ...], list[list[float]], list[float], Score]:
+    """A space where the answer is known: columns 2 and 5 carry the signal, the rest is noise."""
+    import random as _random
+
+    rng = _random.Random(seed)
+    candidates = tuple(
+        Candidate(node_id=f"f{index:02d}", op="last", params={}) for index in range(width)
+    )
+    matrix = [[rng.gauss(0, 1) for _ in range(width)] for _ in range(rows)]
+    target = [3.0 * row[2] - 2.0 * row[5] + rng.gauss(0, 0.05) for row in matrix]
+    position = {candidate.node_id: index for index, candidate in enumerate(candidates)}
+
+    def score(subset: Sequence[Candidate]) -> float:
+        import numpy as np
+
+        if not subset:
+            return 1.0e9
+        columns = [position[candidate.node_id] for candidate in subset]
+        design = np.array([[row[column] for column in columns] + [1.0] for row in matrix])
+        observed = np.array(target)
+        beta, *_ = np.linalg.lstsq(design, observed, rcond=None)
+        return float(np.sqrt(((design @ beta - observed) ** 2).mean()))
+
+    return candidates, matrix, target, score
+
+
+def test_fastener_respects_the_evaluation_budget() -> None:
+    """Section 9.4's fairness crux: the axis is evaluations, and upstream counts generations.
+
+    FASTENER runs a fixed number of rounds, so the adapter counts its own evaluator calls and
+    stops there. A strategy that overran would be buying an advantage the others cannot.
+    """
+    candidates, matrix, target, score = _linear_problem()
+    budget = SearchBudget(evaluations=60, max_features=4, strategy="fastener", seed=7)
+
+    report = search.search(
+        candidates, score, budget, selected_on="validation", matrix=matrix, target=target
+    )
+
+    assert report.evaluations_used <= budget.evaluations
+    assert report.strategy == "fastener"
+
+
+def test_fastener_never_returns_more_features_than_the_cap() -> None:
+    """Every strategy is capped at max_features; one allowed more is not in the same contest."""
+    candidates, matrix, target, score = _linear_problem()
+    budget = SearchBudget(evaluations=150, max_features=3, strategy="fastener", seed=7)
+
+    report = search.search(
+        candidates, score, budget, selected_on="validation", matrix=matrix, target=target
+    )
+
+    assert 0 < len(report.selected) <= 3
+
+
+def test_fastener_is_reproducible_from_its_seed() -> None:
+    """The genetic loop is seeded through the upstream Config, not left to the host."""
+    candidates, matrix, target, score = _linear_problem()
+    budget = SearchBudget(evaluations=120, max_features=4, strategy="fastener", seed=11)
+
+    first = search.search(
+        candidates, score, budget, selected_on="validation", matrix=matrix, target=target
+    )
+    second = search.search(
+        candidates, score, budget, selected_on="validation", matrix=matrix, target=target
+    )
+
+    assert first.selected == second.selected
+    assert first.best_score == second.best_score
+
+
+def test_fastener_finds_the_signal_it_is_given() -> None:
+    """Not a benchmark — a check that the adapter is wired to the right columns.
+
+    A genome bit and a matrix column must refer to the same candidate. Mis-aligning them would
+    not raise; it would weight the crossover by another feature's information gain and still
+    return something plausible, which is why this asserts on the known answer.
+    """
+    candidates, matrix, target, score = _linear_problem()
+    budget = SearchBudget(evaluations=400, max_features=4, strategy="fastener", seed=3)
+
+    report = search.search(
+        candidates, score, budget, selected_on="validation", matrix=matrix, target=target
+    )
+
+    assert {"f02", "f05"} <= set(report.selected)
+    assert report.best_score < 0.5
+
+
+def test_fastener_without_a_matrix_is_refused() -> None:
+    """Its crossover weights by mutual information, which a scoring callback cannot supply."""
+    candidates, _matrix, _target, score = _linear_problem()
+    budget = SearchBudget(evaluations=60, max_features=4, strategy="fastener", seed=7)
+
+    with pytest.raises(SearchError, match="matrix"):
+        search.search(candidates, score, budget, selected_on="validation")
+
+
+def test_a_candidate_null_on_every_row_is_dropped_before_the_budget_is_spent() -> None:
+    """Found 2026-09-11, and it was costing three quarters of the Enefit space.
+
+    `searchable_sources` offers every source the adapter *declares*, not the ones a slice
+    actually read, so a task naming three of six sources still enumerates candidates over all
+    of them. On `enefit_consumption_day_ahead` that left 154 of 205 candidates null on every
+    row — evaluations bought and thrown away, since a constant column cannot change a score.
+    """
+    from vifusion.evaluation.experiment import _drop_unresolved
+
+    candidates = tuple(
+        Candidate(node_id=name, op="last", params={}) for name in ("a", "b", "c")
+    )
+    examples = [
+        Example(
+            entity_id="e1",
+            prediction_time=datetime(2024, 1, 1, hour, tzinfo=UTC),
+            feature_names=("a", "b", "c"),
+            features=(1.0, None, float(hour)),
+            target_time=datetime(2024, 1, 1, hour + 1, tzinfo=UTC),
+            target_value=float(hour),
+            label_available_time=datetime(2024, 1, 1, hour + 1, tzinfo=UTC),
+        )
+        for hour in range(5)
+    ]
+
+    live, dead = _drop_unresolved(candidates, examples)
+
+    assert [candidate.node_id for candidate in live] == ["a", "c"]
+    assert dead == 1

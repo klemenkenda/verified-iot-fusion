@@ -170,6 +170,27 @@ methods:
       "random search over a well-designed registry" is the phrase a reviewer will have in
       mind, and the two are different baselines rather than two names for one.
 
+  - id: M3f
+    search:
+      strategy: fastener
+      evaluations: 2500
+      max_features: 12
+      seed: 20260911
+      space:
+        timezone: Europe/Tallinn
+        entity_graphs:
+          - name: weather_stations
+            max_related_entities: 6
+    description: >-
+      FASTENER (`koprivec2020fastener`), the multiobjective genetic selection of the
+      predecessor research line, spending the same budget as M3 and M3r. Its crossover weights
+      features by mutual information and it keeps a Pareto front indexed by feature count, so
+      unlike forward selection it is not committed to its early choices -- which is the
+      property that should matter when the budget buys only a few full sweeps of the space.
+
+      Run through the authors' own pinned package rather than a reimplementation, so that a
+      result reported under this name is the published algorithm. See docs/decision_log.md.
+
 rationale: >-
   A result that says "every method scores at or below zero" is worth reporting only if it is
   accompanied by the reason, and the reason is measurable: the fold boundary crosses a growth

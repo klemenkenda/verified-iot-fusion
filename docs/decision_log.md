@@ -1938,6 +1938,9 @@ M2/ridge                      0.6172   20.4822   |  M2/ridge           0.0457   
 - **Budgets, measured 2026-09-11 and frozen per task** by the `budget_for` rule: USCRN archive
   264 candidates to 3500 evaluations; Enefit 205 to 2500 (201 before the edge was declared —
   the count moves, the budget does not, since both round to the same 500); Beijing 459 to 6000.
+  M3 and M3r are declared on all four Gate B tasks, `uscrn_temperature_1h_archive` included;
+  an earlier version of this entry quoted the USCRN budget before that task carried a searching
+  method at all.
 - **Regression tests:** `test_a_cross_entity_candidate_needs_its_edge_declared_in_the_assembled_program`
   pins both halves — a cross-entity candidate compiles only when the document carries the
   declaration — plus the two mismatch refusals and the no-edge case, in
@@ -1977,3 +1980,86 @@ M3/lightgbm         107 s      238 s    0.26 s/eval     ~81 s
   invalid-proposal rate of section 9.5 is 0% on this dataset — the figure the LLM's rate will
   be compared against.
 - **Phase / gate:** Phase 6, and the Phase 8 pilot's cost input.
+
+### 2026-09-11 — FASTENER joins the searching baselines, through the authors' own package
+
+- **Decision:** `M3f` is declared on all four Gate B tasks, spending the same frozen budget as
+  M3 and M3r. It runs **`fastener==1.0.4`** — the reference implementation of
+  `koprivec2020fastener` (MIT, [E3-JSI/FASTENER](https://github.com/E3-JSI/FASTENER)) — pinned
+  in the lockfile, rather than a reimplementation. A baseline that cites the paper should be the
+  algorithm the paper describes; a reimplementation would have to be reported as
+  FASTENER-*style*, and any divergence would be this repository's.
+- **Why a third strategy at all.** Greedy forward selection spends roughly one full sweep of the
+  candidate space per feature it adds — 205 candidates on Enefit, 459 on Beijing — so a 2,500
+  budget buys about twelve myopic, irrevocable decisions. FASTENER keeps a Pareto front indexed
+  by feature count and weights its crossover by mutual information, so it is not committed to
+  its early picks. That is precisely the property that should matter when the budget is small
+  relative to the space.
+- **What the adapter decides, and why each choice is forced.** The upstream loop is
+  generation-based; section 9.4's budget axis is *candidate evaluations*, so the evaluator
+  counts its own calls and raises when the budget is spent. Subsets larger than `max_features`
+  are refused **without** charging the budget, since every other strategy is capped the same
+  way. The estimator upstream fits per genome is replaced by a stub: the model that decides a
+  score here is the task's, applied inside the scoring callback, and fitting a second would
+  double the cost and measure the wrong thing. Upstream's fitness cache is left on — a repeated
+  genome costs no fit, so charging for it would penalise the strategy for remembering. Mutual
+  information is computed over the **training** rows with nulls imputed to the column mean; it
+  weights the crossover only, reaches no reported number, and no imputed value is ever fitted on
+  or scored. The initial population is a seeded sample of single-feature genomes, ours because
+  the paper does not specify one.
+- **Two upstream frictions, handled rather than patched.** `EntropyOptimizer` pickles itself
+  every round, which cannot work when the evaluator is a closure over the caller's scoring
+  function — a subclass makes the dump a no-op via `__getstate__`. It also prints a line per
+  round; stdout is redirected for the duration. Neither touches the algorithm.
+- **Reproducibility risk, accepted and recorded:** the package's last release is November 2020
+  and upstream is inactive. It is pure Python, MIT, and pinned exactly; it installs and runs on
+  Python 3.12 with numpy 2.5 and scikit-learn 1.9. Determinism is asserted rather than assumed —
+  `test_fastener_is_reproducible_from_its_seed` requires two runs at one seed to agree on both
+  the selected set and the score.
+- **Regression tests:** budget respected, feature cap respected, seed reproducible, the known
+  signal recovered from a synthetic problem (which is what would catch a genome-to-column
+  misalignment — that fails silently, not loudly), and the missing-matrix refusal.
+- **Phase / gate:** Phase 6; a Gate C freeze input, and the strongest non-LLM baseline H1 has to
+  clear.
+
+### 2026-09-11 — Three quarters of the Enefit search space could never produce a value
+
+- **The defect, found by running FASTENER:** `DatasetBundle.searchable_sources()` offers every
+  source the *adapter declares*, not the ones a slice actually read. `enefit_consumption_day_ahead`
+  names three sources of six in its options, so the bundle carries records for
+  `enefit_target`, `enefit_client` and `enefit_weather_actual` — while the space was enumerated
+  over `enefit_client`, `enefit_electricity`, `enefit_gas`, `enefit_weather_actual` and
+  `enefit_weather_forecast`. **154 of 205 candidates were null on every row.**
+- **What that cost.** A constant column cannot change a score, so every evaluation spent on one
+  is budget bought and discarded. Under the frozen 2,500 budget, three quarters of greedy's
+  sweeps would have been spent learning nothing — which is a large part of why the earlier
+  pilot looked so weak, reaching only three features in 600 evaluations.
+- **How it surfaced, which is the part worth keeping.** FASTENER selected three such candidates
+  and the always-null refusal — added earlier the same day for hand-written programs — stopped
+  the run. The check was written for a different case and caught this one.
+- **Decision:** `run_search` drops candidates that are null on every training row before the
+  budget is spent, and reports the count as `SearchReport.unresolved_candidates`, separately
+  from `rejected_by_code`. The separation matters: verifier rejections are the H2b
+  invalid-proposal measurement, while this is a fact about the archive — the feature is
+  expressible and correct, and this slice simply never produces a value for it.
+- **The frozen budget is deliberately *not* recomputed over the reduced space.** It is declared
+  before official runs as a property of the space a proposer is offered, and making it depend on
+  which candidates a particular slice happens to resolve would make the fairness axis
+  data-dependent — the one thing section 9.4 says it must not be. The larger budget is the
+  conservative direction.
+- **Measured effect at an equal 100-evaluation budget on unit 65**, before and after: greedy
+  moves from an R-squared of 0.0032 to 0.0899, and at 100 evaluations all three strategies now
+  reach roughly what greedy previously needed 600 for.
+
+```
+100 evaluations, unit 65        R2       MAE   features
+M3  greedy                  0.0899    34.467          2
+M3r random                  0.0901    34.259         12
+M3f fastener                0.0915    34.258         10
+```
+
+- **Do not read that table as a strategy comparison.** It is a tenth of the frozen budget over a
+  live space of 51 candidates, and the three are within 0.002 of each other. What it does show
+  is that the filter is worth more than the choice of strategy at this budget, and that the
+  adapter runs end to end on real data.
+- **Phase / gate:** Phase 6.

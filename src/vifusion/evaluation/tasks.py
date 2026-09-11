@@ -56,7 +56,7 @@ class SearchSpec(_Strict):
     reports its LLM calls, tokens and latency separately as the overhead it adds.
     """
 
-    strategy: Literal["random", "greedy"] = "greedy"
+    strategy: Literal["random", "greedy", "fastener"] = "greedy"
     evaluations: int
     max_features: int = 8
     seed: int = 20260910

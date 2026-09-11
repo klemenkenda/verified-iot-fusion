@@ -562,6 +562,49 @@ def _selection_score(
     return score
 
 
+def _drop_unresolved(
+    candidates: Sequence[Candidate], examples: Sequence[Example]
+) -> tuple[tuple[Candidate, ...], int]:
+    """Candidates that produced a value at least once, and how many did not."""
+    if not examples:
+        return tuple(candidates), 0
+    position = {name: index for index, name in enumerate(examples[0].feature_names)}
+    live: list[Candidate] = []
+    dead = 0
+    for candidate in candidates:
+        index = position.get(candidate.node_id)
+        if index is None:
+            live.append(candidate)
+            continue
+        if any(example.features[index] is not None for example in examples):
+            live.append(candidate)
+        else:
+            dead += 1
+    return tuple(live), dead
+
+
+def _candidate_matrix(
+    candidates: Sequence[Candidate], examples: Sequence[Example]
+) -> tuple[tuple[tuple[float | None, ...], ...], tuple[float, ...]]:
+    """The accepted candidates' values over ``examples``, column-ordered by node id.
+
+    The column order is the one the search sorts its genome into, so a genome bit and a matrix
+    column refer to the same candidate. Getting that wrong would not raise — it would weight
+    the crossover by another feature's information gain, and the search would still return
+    something plausible.
+    """
+    if not examples:
+        return (), ()
+    position = {name: index for index, name in enumerate(examples[0].feature_names)}
+    order = [
+        position[candidate.node_id]
+        for candidate in sorted(candidates, key=lambda item: item.node_id)
+        if candidate.node_id in position
+    ]
+    rows = tuple(tuple(example.features[index] for index in order) for example in examples)
+    return rows, tuple(example.target_value for example in examples)
+
+
 def _check_declared_edges(
     method: MethodSpec,
     bundle: DatasetBundle,
@@ -673,6 +716,27 @@ def run_search(
         strategy=method.search.strategy,
         seed=method.search.seed,
     )
+    # The candidate matrix, for the strategies that weight features by mutual information
+    # rather than by trial alone. Built from the *training* rows: the selection score already
+    # reads validation, and letting the crossover see it too would put the selection fold into
+    # a second channel of the same search.
+    # A candidate the compiler accepted can still be null on every row of this archive, and
+    # such a feature is worse than useless to a search: it cannot change any score, so every
+    # evaluation spent on it is budget bought and thrown away, and a strategy unlucky enough to
+    # select one would have the run refused by the always-null check that guards written
+    # programs. Removing it here is the honest place — the space a search draws from should
+    # contain what this data can actually produce — and the count is reported separately from
+    # the verifier's rejections, because this is a fact about the archive rather than about the
+    # proposal.
+    live, unresolved = _drop_unresolved(accepted, training)
+    if not live:
+        raise TaskError(
+            f"method {method.id}: every one of the {len(accepted)} accepted candidates was "
+            "null on every training row; the space cannot be searched over this slice"
+        )
+    accepted = live
+
+    columns, labels = _candidate_matrix(accepted, training)
     report = search.search(
         accepted,
         _selection_score(training, validation, penalty, predictor_name),
@@ -681,6 +745,9 @@ def run_search(
         proposed=len(proposed),
         rejected_by_code=rejected,
         space=space,
+        matrix=columns,
+        target=labels,
+        unresolved=unresolved,
     )
 
     # In the order the search chose them, not in enumeration order: for forward selection

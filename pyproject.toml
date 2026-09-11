@@ -23,6 +23,13 @@ dependencies = [
     # which is the defect docs/original_system_audit.md finding 6 describes, in a new
     # form: a calendar feature must not depend on which machine computed it.
     "tzdata>=2024.1",
+    # FASTENER, the M3f searching baseline: the reference implementation of
+    # koprivec2020fastener from the predecessor research line, so that a result reported under
+    # that name is the published algorithm rather than this repository's reading of it. Pinned
+    # exactly rather than ranged: upstream's last release is November 2020 and the project is
+    # inactive, so the pin is what keeps a frozen protocol reproducible. MIT, pure Python, no
+    # build step. See docs/decision_log.md, 2026-09-11.
+    "fastener==1.0.4",
 ]
 
 [project.optional-dependencies]

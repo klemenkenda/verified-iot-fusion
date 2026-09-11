@@ -27,8 +27,14 @@ what makes the same number about the LLM a comparison rather than an anecdote.
 
 from __future__ import annotations
 
+import io
+import tempfile
+import warnings
+import uuid
 from collections.abc import Callable, Sequence
+from contextlib import redirect_stdout
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal
 
 from vifusion.compiler.compile import compile_program, parse_program
@@ -37,7 +43,7 @@ from vifusion.dsl.schema import DSL_SCHEMA_VERSION, EntityGraphSchema, SourceSch
 from vifusion.models.search_space import Candidate, SearchSpace, describe
 from vifusion.runtime.batch import BATCH_LOWERINGS
 
-Strategy = Literal["random", "greedy"]
+Strategy = Literal["random", "greedy", "fastener"]
 
 Score = Callable[[Sequence[Candidate]], float]
 """Evaluates one feature subset and returns a loss: lower is better."""
@@ -89,6 +95,13 @@ class SearchReport:
     space: dict[str, Any] = field(default_factory=dict)
     selected_profile: dict[str, Any] = field(default_factory=dict)
 
+    unresolved_candidates: int = 0
+    """Candidates the compiler accepted but that were null on every selection row.
+
+    Counted separately from ``rejected_by_code`` on purpose: those are *verifier* rejections and
+    are the H2b measurement, while this is a property of the data — the feature is expressible
+    and correct, and this archive simply never produces a value for it."""
+
     @property
     def invalid_proposal_rate(self) -> float:
         """Section 9.5, for the non-LLM baseline."""
@@ -104,6 +117,7 @@ class SearchReport:
             "accepted_candidates": self.accepted_candidates,
             "invalid_proposal_rate": self.invalid_proposal_rate,
             "rejected_by_code": dict(sorted(self.rejected_by_code.items())),
+            "unresolved_candidates": self.unresolved_candidates,
             "evaluations_used": self.evaluations_used,
             "evaluations_budgeted": self.evaluations_budgeted,
             "best_score": self.best_score,
@@ -206,6 +220,149 @@ def validate_candidates(
     return tuple(accepted), rejected
 
 
+
+# --- the FASTENER adapter ---------------------------------------------------------------------
+#
+# Everything the upstream package touches is confined to this block, so a reader can see the
+# whole of the dependency surface in one place and a future version bump has one place to break.
+
+_OUT_OF_SCOPE = -1.0e30
+"""Score for a genome outside the declared feature cap. Finite rather than -inf so the
+upstream front's arithmetic stays defined, and low enough that nothing can dominate with it."""
+
+
+class _StubModel:
+    """Stands in for the estimator upstream fits per genome.
+
+    `EntropyOptimizer.train_model` calls ``model().fit(train_data[:, genes], train_target)`` and
+    hands the result to the evaluator. The estimator that decides a score here is the task's
+    own, applied inside the caller's ``score``; fitting a second one would double the cost of
+    every evaluation and measure a model nobody asked for.
+    """
+
+    def fit(self, _data: Any, _target: Any) -> "_StubModel":
+        return self
+
+
+def _fastener_result(score: float) -> Any:
+    from fastener.item import Result
+
+    return Result(score)
+
+
+def _mating_strategy() -> Any:
+    """Intersection mating weighted by mutual information — the entropy in the name.
+
+    ``regression=True`` selects `mutual_info_regression`; every task in this repository
+    predicts a continuous target, and the classification variant would discretise it.
+    """
+    from fastener.item import (
+        IntersectionMatingWithWeightedRandomInformationGain,
+        RandomEveryoneWithEveryone,
+    )
+
+    return RandomEveryoneWithEveryone(
+        pool_size=3,
+        mating_strategy=IntersectionMatingWithWeightedRandomInformationGain(regression=True),
+    )
+
+
+def _mutation_strategy(width: int) -> Any:
+    """Bit-flip at 1/N, the paper's default: it keeps the expected genome size unchanged."""
+    from fastener.item import RandomFlipMutationStrategy
+
+    return RandomFlipMutationStrategy(1.0 / max(width, 1))
+
+
+def _fastener_config(seed: int) -> Any:
+    """A seeded config writing to a directory that does not yet exist.
+
+    Upstream calls ``os.makedirs(output_folder, exist_ok=False)``, so the folder must be fresh
+    per run. Nothing reads what it writes — the front is taken from the object in memory — so
+    it goes under the system temp directory rather than into the repository.
+    """
+    from fastener.fastener import Config
+
+    folder = Path(tempfile.gettempdir()) / "vifusion-fastener" / uuid.uuid4().hex
+    return Config(
+        output_folder=str(folder),
+        random_seed=seed,
+        number_of_rounds=10**6,
+    )
+
+
+_QUIET_OPTIMIZER: Any = None
+
+
+def _quiet_optimizer_class() -> Any:
+    """Built on first use and registered under a module-level name.
+
+    Upstream pickles the optimizer by class reference, so a class defined inside a function is
+    unresolvable — `Can't get local object`. Binding it into the module globals with a matching
+    ``__qualname__`` is what makes the no-op dump below actually reachable. The class is built
+    lazily so that importing this module does not import the dependency.
+    """
+    global _QUIET_OPTIMIZER
+    if _QUIET_OPTIMIZER is not None:
+        return _QUIET_OPTIMIZER
+
+    from fastener.fastener import EntropyOptimizer
+
+    class _QuietEntropyOptimizer(EntropyOptimizer):  # type: ignore[misc,valid-type]
+        """Upstream, with its per-round checkpoint made free.
+
+        `EntropyOptimizer` pickles itself every round. That cannot work here — the evaluator is
+        a closure over the caller's scoring function and is not picklable — and it would be
+        wasted work if it could, since the result is read from the live object. Returning an
+        empty state keeps the dump a no-op without touching the loop that calls it.
+        """
+
+        def __getstate__(self) -> dict[str, Any]:
+            return {}
+
+        def __setstate__(self, state: dict[str, Any]) -> None:
+            return None
+
+    _QuietEntropyOptimizer.__qualname__ = "_QuietEntropyOptimizer"
+    _QuietEntropyOptimizer.__module__ = __name__
+    globals()["_QuietEntropyOptimizer"] = _QuietEntropyOptimizer
+    _QUIET_OPTIMIZER = _QuietEntropyOptimizer
+    return _QuietEntropyOptimizer
+
+
+def _as_array(values: Sequence[float]) -> Any:
+    import numpy as np
+
+    return np.asarray(values, dtype=float)
+
+
+def _imputed_columns(matrix: Sequence[Sequence[float | None]]) -> Any:
+    """The candidate matrix with nulls replaced by each column's mean.
+
+    **This feeds the mutual-information weighting and nothing else.** No imputed value is
+    fitted on, scored, or reported; the scoring path receives the real feature vectors with
+    their nulls intact. A column that is null everywhere becomes zero, which gives it no
+    information gain — the right answer for a feature that never resolved, and one the
+    always-null check refuses long before a search runs.
+    """
+    import numpy as np
+
+    data = np.array(
+        [[np.nan if value is None else float(value) for value in row] for row in matrix],
+        dtype=float,
+    )
+    if data.size:
+        # A column that is null throughout makes nanmean warn about an empty slice. That case
+        # is handled on the next line, and such candidates are removed from the space before a
+        # search begins, so the warning is noise rather than a signal.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            means = np.nanmean(data, axis=0)
+        means = np.where(np.isnan(means), 0.0, means)
+        data = np.where(np.isnan(data), means, data)
+    return data
+
+
 def search(
     candidates: Sequence[Candidate],
     score: Score,
@@ -215,11 +372,19 @@ def search(
     proposed: int | None = None,
     rejected_by_code: dict[str, int] | None = None,
     space: SearchSpace | None = None,
+    matrix: Sequence[Sequence[float | None]] | None = None,
+    target: Sequence[float] | None = None,
+    unresolved: int = 0,
 ) -> SearchReport:
     """Spend the budget and return the best feature set found.
 
     ``score`` returns a loss, so lower is better; the caller decides what it measures, which
     is what keeps this module independent of the metric and of the model.
+
+    ``matrix`` and ``target`` are the candidate values and labels of the *selection* rows, and
+    only the ``fastener`` strategy reads them: its crossover weights features by mutual
+    information, which cannot be computed from a scoring callback alone. They are optional so
+    that the two strategies which need no data keep needing none.
     """
     if not candidates:
         raise SearchError("the search space is empty after validation")
@@ -228,6 +393,8 @@ def search(
         selected, best, used = _random(candidates, score, budget)
     elif budget.strategy == "greedy":
         selected, best, used = _greedy(candidates, score, budget)
+    elif budget.strategy == "fastener":
+        selected, best, used = _fastener(candidates, score, budget, matrix or (), target or ())
     else:  # pragma: no cover - the Literal keeps this unreachable
         raise SearchError(f"unknown search strategy {budget.strategy!r}")
 
@@ -237,6 +404,7 @@ def search(
         proposed_candidates=proposed if proposed is not None else len(candidates),
         accepted_candidates=len(candidates),
         rejected_by_code=dict(rejected_by_code or {}),
+        unresolved_candidates=unresolved,
         evaluations_used=used,
         evaluations_budgeted=budget.evaluations,
         best_score=best,
@@ -306,3 +474,97 @@ def _greedy(
         first = ordered[0]
         return (first,), score([first]), used + 1
     return tuple(chosen), best_score, used
+
+
+def _fastener(
+    candidates: Sequence[Candidate],
+    score: Score,
+    budget: SearchBudget,
+    matrix: Sequence[Sequence[float | None]],
+    target: Sequence[float],
+) -> tuple[tuple[Candidate, ...], float, int]:
+    """FASTENER: the multi-objective genetic selection of `koprivec2020fastener`.
+
+    **The upstream implementation, pinned, rather than a reimplementation.** `fastener==1.0.4`
+    is the authors' own package (MIT, E3-JSI/FASTENER). A baseline that cites the paper should
+    be the algorithm the paper describes, not this repository's reading of it, so the genetic
+    loop -- intersection mating weighted by mutual information, per-cardinality Pareto
+    bookkeeping, bit-flip mutation at 1/N -- is theirs. What this function supplies is the
+    adaptation to the protocol of section 9.4, and each piece of that is a decision:
+
+    * **The budget is candidate evaluations, not generations.** FASTENER runs a fixed number of
+      rounds; the fairness crux of section 9.4 is the number of feature subsets actually fitted
+      and scored. So the evaluator counts its own calls and raises when the frozen budget is
+      spent, and the rounds are set high enough that exhaustion is always what stops the loop.
+      Its fitness cache is left on: a repeated genome costs no fit, so charging the budget for
+      it would penalise this strategy for remembering.
+    * **Subsets larger than `max_features` are refused without spending budget.** Every other
+      strategy is capped at the same size, and a strategy allowed to buy more features than its
+      rivals is not running the same experiment.
+    * **The model is a stub.** Upstream fits a scikit-learn estimator per genome and hands it to
+      the evaluator; here the estimator that matters is chosen by the task and applied inside
+      ``score``, so fitting a second one would double the cost and measure the wrong thing.
+    * **Mutual information is computed over the candidate matrix with nulls imputed to the
+      column mean.** It weights the crossover only -- it reaches no reported number, and no
+      imputed value is ever fitted on or scored.
+    * **The initial population is ours, because the paper does not specify one.** A seeded
+      sample of single-feature genomes, so the run is reproducible from the manifest's seed.
+    """
+    ordered = tuple(sorted(candidates, key=lambda item: item.node_id))
+    width = len(ordered)
+    if not matrix or not target:
+        raise SearchError(
+            "the fastener strategy needs the candidate matrix its mutual information is "
+            "computed from; pass matrix= and target= to search()"
+        )
+
+    columns = _imputed_columns(matrix)
+    rng = make_rng(budget.seed, "search/fastener")
+
+    best: tuple[Candidate, ...] = ()
+    best_score = float("inf")
+    used = 0
+
+    class _BudgetSpent(Exception):
+        """Raised from inside the genetic loop when the frozen budget is exhausted."""
+
+    def evaluator(_model: Any, genes: Sequence[bool], _shuffle: Any = None) -> Any:
+        nonlocal best, best_score, used
+        subset = tuple(item for item, on in zip(ordered, genes, strict=False) if on)
+        # Out of scope rather than bad: refused before the counter, so an oversized genome
+        # costs the budget nothing and stays dominated in the front.
+        if not subset or len(subset) > budget.max_features:
+            return _fastener_result(_OUT_OF_SCOPE)
+        if used >= budget.evaluations:
+            raise _BudgetSpent
+        value = score(subset)
+        used += 1
+        if value < best_score:
+            best, best_score = subset, value
+        return _fastener_result(-value)
+
+    seeds = sorted(rng.sample(range(width), min(width, 2 * budget.max_features)))
+    optimizer = _quiet_optimizer_class()(
+        model=_StubModel,
+        train_data=columns,
+        train_target=_as_array(target),
+        evaluator=evaluator,
+        number_of_genes=width,
+        mating_selection_strategy=_mating_strategy(),
+        mutation_strategy=_mutation_strategy(width),
+        initial_genes=[[index] for index in seeds],
+        config=_fastener_config(budget.seed),
+    )
+
+    try:
+        with redirect_stdout(io.StringIO()):
+            optimizer.mainloop()
+    except _BudgetSpent:
+        pass
+
+    if not best:
+        raise SearchError(
+            "fastener returned no feature set within the budget; the space or the budget is "
+            "too small for a single genome to be evaluated"
+        )
+    return best, best_score, used
