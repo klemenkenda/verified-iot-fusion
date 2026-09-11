@@ -1,0 +1,88 @@
+# M1 — raw current values plus calendar features (section 9.1).
+#
+# The minimal deterministic baseline: whatever the station last said, and what time it is. No
+# windows, no aggregates, no domain knowledge. Its job is to sit between the naive floor and
+# the expert program so that M2's margin can be attributed to *engineered* features rather
+# than to having a fitted model at all.
+#
+# **It therefore reads exactly the features M2 engineers, and no others.** That constraint is
+# the whole design of this baseline and it is easy to get wrong: an M1 handed the three other
+# pollutants the station reports beats M2 on both predictors, which says nothing about feature
+# engineering and everything about having been given more sources. If M2 should read PM10,
+# NO2 and O3 — and it probably should — the place to fix that is M2.
+#
+# `wind_direction` is a compass label rather than a number, so this baseline carries a
+# category as its raw value, as M2 does. The two must stand or fall on the same inputs.
+#
+# Under `staggered` the pollutants are three hours behind the meteorology. M1 cannot see that;
+# it reads `last` on both and is handed whatever the clock has released. That blindness is the
+# point of the comparison with M2, which reports staleness and gaps.
+schema_version: "0.1.0"
+name: beijing_m1_raw_calendar
+
+sources:
+  - source_id: beijing_air
+    feature_name: pm2_5
+    kind: measurement
+    value_type: number
+    unit: microgram / meter ** 3
+    max_input_rate_per_hour: 2
+    description: Fine particulates.
+
+  - source_id: beijing_air
+    feature_name: temp
+    kind: measurement
+    value_type: number
+    unit: degC
+    max_input_rate_per_hour: 2
+    description: Air temperature.
+
+  - source_id: beijing_air
+    feature_name: wspm
+    kind: measurement
+    value_type: number
+    unit: meter / second
+    max_input_rate_per_hour: 2
+    description: Wind speed.
+
+  - source_id: beijing_air
+    feature_name: wd
+    kind: measurement
+    value_type: category
+    max_input_rate_per_hour: 2
+    description: Wind direction, as a compass label.
+
+nodes:
+  - id: pm25_now
+    op: last
+    params: {source: beijing_air, feature: pm2_5}
+  - id: temp_now
+    op: last
+    params: {source: beijing_air, feature: temp}
+  - id: wind_now
+    op: last
+    params: {source: beijing_air, feature: wspm}
+  - id: wind_direction
+    op: last
+    params: {source: beijing_air, feature: wd}
+
+  # Asia/Shanghai, not UTC: the dataset's hour columns are local, and a daily pollution cycle
+  # written against the wrong zone is an eight-hour phase error in every calendar feature.
+  - id: hour
+    op: hour_of_day
+    params: {timezone: Asia/Shanghai}
+  - id: day_of_year
+    op: day_of_year
+    params: {timezone: Asia/Shanghai}
+  - id: weekend
+    op: is_weekend
+    params: {timezone: Asia/Shanghai}
+
+outputs:
+  - pm25_now
+  - temp_now
+  - wind_now
+  - wind_direction
+  - hour
+  - day_of_year
+  - weekend

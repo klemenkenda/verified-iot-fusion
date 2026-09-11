@@ -1493,10 +1493,21 @@ M2/lightgbm         2039   0.9030     1.2290     1.7131    1.330    -0.1267
   scores 0.31 from y(t), -0.14 from y(t-24) and -0.37 from y(t-48), and only the last is
   available in time.
 - **Alternatives considered:** reporting unit 0 as the Enefit result and logging the caveat —
-  rejected because Gate B asks whether the *baselines* are credible, and a unit whose metric is
-  dominated by a level shift cannot answer that either way. Changing the primary metric to a
-  scale-relative one — deferred: it is a protocol change affecting all three datasets and should
-  not be driven by one dataset's inconvenience.
+  not rejected, *kept*, as the companion task. Changing the primary metric to a scale-relative
+  one — deferred: it is a protocol change affecting all three datasets and should not be driven
+  by one dataset's inconvenience.
+- **Corrected 2026-09-11, same day:** an earlier version of this entry said a unit whose metric
+  is dominated by a level shift "cannot answer Gate B either way." That is wrong, and the error
+  was reading one metric. R-squared is what the level shift destroys; **MAE ranks the methods on
+  unit 0 perfectly sensibly** — M2/ridge 124.6, M0 147.8, M1/ridge 155.5, a clean M2 > M0 > M1
+  with the expert program winning outright. Nothing obliges a result to be read through the
+  declared *primary* metric alone, and on a non-stationary fold MAE is the more informative one.
+  Both units are reported on both metrics.
+- **A limit of the selection criterion, recorded because it bit immediately:** the ratio tests
+  the **mean** and nothing else. Unit 65 passes it at 1.014 while `consumption_mean_7d` falls
+  outside its training range in 92.9% of validation rows and `capacity` in 48.7%. A stable mean
+  is not a stable distribution, and "stationary unit" in this entry should be read as "level-
+  stationary" and no more.
 - **Made before or after viewing test results:** the non-stationarity was found *after* seeing
   unit 0's scores and is what prompted the search. The **selection criterion was declared before
   any score on any candidate unit was computed**, and no candidate has been evaluated other than
@@ -1547,3 +1558,140 @@ M2/lightgbm   0.3468  30.0925  34.594   5.626  | -0.2150  148.358  179.92  5.427
   bias is 6.1 against -70 to -164 for the methods without it. Suggestive on one unit, no more.
 - **Made before or after viewing test results:** after; this entry records them.
 - **Phase / gate:** Phase 6, Gate B — the Enefit half.
+
+### 2026-09-11 — `price_fc_24h` is empty in every row: a declared feature that never resolves
+
+- **The defect:** `configs/programs/enefit_consumption.yaml` (M2) and
+  `enefit_m1_raw_calendar.yaml` (M1) both declare `price_fc_24h` — `forecast(enefit_electricity,
+  euros_per_mwh, lead: 24h)`. Measured on unit 65's 15,286 electricity records, the lead
+  available from that stream runs **-11h to +13h with a median of 1h**: a price for the target's
+  own hour, 24 hours out, is never available at the prediction time. The feature is null for
+  every row of both folds. M2 declares fourteen features and fits on thirteen; M1 declares seven
+  and fits on six.
+- **Not the station filter.** `enefit_electricity` has no `entity_from_key`, so the read-scoping
+  change of the same day does not touch it; 15,286 records are broadcast to the unit correctly
+  and carry sensible values. The mismatch is between the program's declared lead and the
+  delivery this stream actually has.
+- **Why the lead is short, and why that is probably correct:** the block carrying a day's prices
+  is released at 11:00 local on the day those prices apply, so the hours still ahead at release
+  run only to 23:00 — thirteen hours. A day-ahead consumption forecast therefore *cannot* know
+  the price of the hour it predicts. The program was written on the assumption that it could.
+- **What this is evidence of beyond itself:** a program may declare a feature that resolves to
+  null for 100% of rows and nothing in the pipeline objects. Every published number for M1 and
+  M2 on Enefit was produced with a dead column, and the feature count in the results table is
+  overstated. A run should refuse, or at minimum report, a declared feature that never resolves;
+  that check does not exist.
+- **Not yet fixed.** The repair is a research decision rather than a typo: the honest
+  substitute is the latest *known* price as a level signal, which is a different feature from
+  the one the program claims, and changing M2 changes the human bar H1 must clear. Recorded here
+  and left for that decision.
+- **Affected experiments / artifacts:** every Enefit run to date, including both Gate B runs of
+  this day. The effect on the scores is small — a constant column contributes nothing to either
+  predictor — but the feature counts and the program description are wrong.
+- **Phase / gate:** Phase 6.
+
+### 2026-09-11 — LightGBM loses to ridge on Enefit because a tree cannot leave its training range
+
+- **The observation that prompted this:** on Enefit, ridge beats LightGBM in every cell, which
+  inverts USCRN, where LightGBM wins. A predictor that is better on one dataset and worse on
+  another is worth explaining before either result is reported.
+- **It is not a misconfiguration, and not the tuning grid.** Fitted on the floor feature alone,
+  so nothing else is in play: LightGBM reaches a *training* MAE of 8.50 against ridge's 8.92 —
+  the booster fits the training fold slightly better — and a validation MAE of 28.63 against
+  ridge's 17.47. Capacity is irrelevant: from `num_leaves` 7 / 200 rounds to `num_leaves` 255 /
+  3,000 rounds, training MAE moves 8.50 to 8.47 and validation MAE 28.63 to 28.77. Two simpler
+  explanations were tested and both fail — the gap is *not* concentrated on rows outside the
+  training feature box (it is uniform, and on some features larger inside), and enlarging the
+  grid makes it slightly worse rather than better.
+- **The mechanism is the prediction range.** A tree's output is a leaf average, so its range is
+  strictly inside the training target range. On the validation fold LightGBM never predicts above
+  **87.4**; ridge reaches **133.5**; the training target max is 122.4 and validation targets reach
+  **162.0**, with 8.8% above anything seen in training. Enefit consumption has a growing, heavy
+  upper tail. Ridge extrapolates the linear persistence relation; a tree structurally cannot.
+  USCRN is a bounded physical quantity whose validation range sits inside its training range,
+  which is why the same predictor wins there.
+- **Why it matters for the protocol:** section 9.2 keeps two predictors so that a feature-set
+  result is not an artifact of one model class. On a target that drifts upward, the comparison
+  measures the drift instead — LightGBM is handicapped by the fold boundary, not by the features.
+  Any Enefit statement of the form "M2 helps ridge but not LightGBM" has to be read against this,
+  and a reader has to be told which regime a dataset is in.
+- **What is not done:** no change to `LIGHTGBM_GRID`, which the evidence says would not help.
+  Whether to report a detrended or capacity-normalised target on Enefit is a protocol question
+  for Gate C, not a Phase 6 fix.
+- **Made before or after viewing test results:** after; this explains them.
+- **Phase / gate:** Phase 6, and an input to Gate C's protocol freeze.
+
+### 2026-09-11 — Beijing's floor is persistence, because a seasonal naive is undefined there
+
+- **Decision:** `beijing_pm25_24h` scores M0 as **persistence** — the most recent PM2.5 the
+  station delivered — rather than the 24-hour seasonal naive the daily cycle would otherwise
+  call for. `beijing_m0_naive.yaml` emits both; only persistence is scored.
+- **Why, and it is a property of the dataset rather than a preference:** an exact lag is
+  undefined wherever the hour it addresses is missing, and this dataset has real gaps at every
+  station. Measured over the 4,248 validation prediction times, the 24-hour lag is null at all
+  twelve: 54 at the best (Wanliu, 1.3%), 269 at the worst (Dongsi, 6.3%), 126 at the station
+  this task runs. The floor refuses to skip an instance — the same guard that rejected Enefit's
+  unit 41 — so a seasonal naive cannot be scored on any Beijing station at all.
+- **What this exposes about the vocabulary, which is the part worth keeping:** the DSL has no
+  fallback operator, so "the value 24 hours ago, or the most recent one if that hour is
+  missing" cannot be written. `lag` is exact by construction and `last` ignores the lag
+  entirely. On the two datasets with dense series this never came up; on the dataset chosen
+  *for* its missing data it is the first thing that happens. A `coalesce`-like operator is the
+  obvious repair and is a Phase 7 item with its own decision.
+- **Risk accepted:** persistence is a weaker floor than a seasonal naive at a 24-hour horizon,
+  so M0 here is easier to beat than M0 on USCRN or Enefit, and the margin over the floor is not
+  comparable across the three datasets. The floor's R-squared of -0.50 says so plainly.
+- **Phase / gate:** Phase 6, Gate B — the Beijing half.
+
+### 2026-09-11 — M1 must read exactly the features M2 engineers, and on Beijing it briefly did not
+
+- **Decision:** `beijing_m1_raw_calendar.yaml` reads the raw current value of each feature the
+  M2 program reads — PM2.5, temperature, wind speed, wind direction — plus calendar, and
+  nothing else.
+- **Why it is recorded rather than quietly fixed:** the first version of this baseline was
+  given the three other pollutants the station reports (PM10, NO2, O3) on the reasoning that a
+  raw baseline should take what the source offers. It beat M2 on both predictors and both
+  metrics. That result was an artifact of the source list, not a finding about feature
+  engineering, and it would have read as evidence against H1's premise. M1 exists to isolate
+  *fitted model* from *engineered features*; the moment its inputs differ from M2's it measures
+  neither.
+- **The substantive question it raises, left open:** M2 on Beijing reads one pollutant where
+  the station reports four, and PM10, NO2 and O3 are plainly informative about PM2.5. That is
+  an argument that the Beijing expert program is thin, which is the same suspicion USCRN raised
+  from a different direction. Widening M2 is a change to the human bar and belongs with that
+  decision, not with a baseline fix.
+- **Phase / gate:** Phase 6.
+
+### 2026-09-11 — Gate B on Beijing: baselines credible, and M2 again fails to clear M1
+
+- **What was run:** `beijing_pm25_24h`, validation fold, station Aotizhongxin, arrival scenario
+  `typical`, 25,533 training examples (25 withheld as unrevealed), 4,123 scored, run id
+  `20260911T092159Z-a0f51a54`. M1 and M2 figures are in-sample.
+
+```
+method                 n       R2        MAE       RMSE     MASE       bias
+M0/identity         4123  -0.4954    45.6192    66.5740    4.182     2.1586
+M1/ridge            4123   0.0544    40.1230    52.9389    3.678     6.6188
+M1/lightgbm         4123   0.1056    39.1427    51.4873    3.588     9.3080
+M2/ridge            4123   0.0541    40.1292    52.9481    3.679     6.5662
+M2/lightgbm         4123   0.0675    39.8276    52.5709    3.651     8.2874
+```
+
+- **Credible:** every fitted method clears the floor on every metric, the ordering is sensible,
+  biases are small beside an MAE of 40, and the delayed-label rule withheld a plausible 25
+  examples at a two-hour simulated label delay. Nothing here is implausible.
+- **M2 does not clear M1.** Under ridge the two are level to four decimal places (R-squared
+  0.0541 against 0.0544, MAE 40.129 against 40.123); under LightGBM M2 is behind. **This is the
+  second of three datasets where the expert program fails to separate from raw values plus
+  calendar** — USCRN was the first, and Enefit is now the lone exception. Section 9.1 casts M2
+  as the human bar H1 must clear, and a bar level with raw-plus-calendar on two of three
+  datasets makes clearing it mean little. The concern is now the main open question of Gate B.
+- **LightGBM beats ridge here**, which is the control for the same day's Enefit finding: PM2.5
+  is a bounded quantity whose validation range sits inside its training range, so the tree's
+  inability to leave that range costs nothing. The predictor inversion is specific to drifting
+  targets, as claimed.
+- **The absolute numbers are low** — R-squared near 0.05-0.11 — and that is the task rather than
+  the pipeline: 24-hour-ahead PM2.5 from one station's own history is genuinely hard, and the
+  floor's -0.50 shows how little persistence carries at that horizon.
+- **Made before or after viewing test results:** after; this entry records them.
+- **Phase / gate:** Phase 6, Gate B.

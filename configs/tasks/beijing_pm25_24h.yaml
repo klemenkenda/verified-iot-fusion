@@ -1,0 +1,88 @@
+# Day-ahead PM2.5 for one Beijing station — the section 8.4 cross-domain task.
+#
+# Section 8.4 asks for PM2.5 at one-, six-, and 24-hour horizons. This is the 24-hour one,
+# taken first because it is the horizon where a naive floor stops being nearly unbeatable and
+# engineered features have room to matter; the other two are one-line variants of this file.
+#
+# **Availability here is simulated, and that is the thing to hold in mind before reading any
+# number this produces.** The dataset records no delivery times at all. Section 5.1 permits
+# exactly one response — declare an arrival scenario, apply it, and label every record with
+# the model that produced it — and `arrival: typical` below is that declaration. A result
+# computed under `typical` is not comparable to one under `prompt` or `staggered`; the
+# scenario is in every record's derivation and in the run manifest so the two can never be
+# confused. Section 10.1's sensitivity analysis is the reason more than one scenario exists,
+# and running this task under the other two is what that analysis is.
+#
+# One station, for the reason the Enefit task sets out at length: the runtime fits one model
+# across every entity a task names and no feature says which entity a row came from, so a
+# multi-station panel measures pooling rather than feature engineering. Aotizhongxin is an
+# urban site and is not among the two the split holds out for transfer.
+#
+# The searching methods are deliberately absent, as in the USCRN and Enefit Gate B tasks:
+# Phase 6 asks whether the *baselines* are credible. M3 and M3r cost two full budgets per
+# predictor and answer a Phase 7 question.
+schema_version: "0.1.0"
+name: beijing_pm25_24h
+
+dataset: beijing
+root: data/raw/beijing
+options:
+  # The declared simulated arrival regime — pollutants an hour behind the hour they measure,
+  # meteorology half an hour, labels two. Plausible rather than measured, which is what
+  # simulated means. See docs/decision_log.md and the dataset card.
+  arrival: typical
+  # The same station named below, given to the adapter rather than only to the runner, so the
+  # read is one station's file rather than all twelve.
+  stations: Aotizhongxin
+
+target_source: beijing_target
+target_feature: pm2_5
+horizon: PT24H
+prediction_interval: PT1H
+
+split: beijing_transfer
+
+entities: ["Aotizhongxin"]
+
+predictors: [ridge, lightgbm]
+
+methods:
+  - id: M0
+    program: configs/programs/beijing_m0_naive.yaml
+    predictor: identity
+    output: persistence
+    description: >-
+      Forecasting floor: the most recent PM2.5 this station delivered, returned unchanged.
+      **Persistence rather than the seasonal naive, and the reason is a property of the
+      dataset rather than a preference.** A daily cycle would make the twenty-four-hour lag
+      the better floor, and the program emits it -- but this dataset has real gaps, and an
+      exact lag is undefined wherever the hour it addresses is missing. Measured over the
+      4,248 validation prediction times, the 24-hour lag is null at every one of the twelve
+      stations: 54 times at the best (Wanliu, 1.3%) and 269 at the worst (Dongsi, 6.3%). The
+      floor refuses to skip an instance -- a baseline that declines the hard ones is a filter,
+      not a floor -- so a seasonal naive cannot be scored here at all. `last` is defined
+      whenever the station has ever reported. `seasonal` stays in the program as a diagnostic.
+
+  - id: M1
+    program: configs/programs/beijing_m1_raw_calendar.yaml
+    description: >-
+      Raw current values of the pollutants and meteorology the station reports, plus calendar
+      features. Separates the value of a fitted model from the value of engineered features.
+
+  - id: M2
+    program: configs/programs/beijing_pm25.yaml
+    description: >-
+      Expert-engineered features after the iot-fusion vocabulary: windowed statistics, a
+      bounded last-value that returns null rather than a stale reading, staleness, gap counts,
+      and a within-source anomaly. The human bar H1 must clear.
+
+rationale: >-
+  This dataset earns its place by being the one where availability is *not* recorded, and the
+  honest use of it is comparative: the same task under three declared arrival regimes says how
+  much a conclusion depends on the delivery assumption, which is a question the other two
+  datasets cannot ask because their delivery is measured.
+
+  It is also the independent domain. Enefit and USCRN are both energy-and-weather; if the
+  expert vocabulary of section 9.1 only helps on those, that is a much weaker claim than if it
+  transfers to air quality. Gate B does not settle that -- it only establishes that the
+  baselines here behave sensibly enough for the question to be asked.

@@ -1,0 +1,41 @@
+# M0 — the forecasting floor for Beijing station PM2.5.
+#
+# A naive forecast written as a feature program rather than as a separate code path, for the
+# reason the USCRN floor gives: a floor computed by its own routine could read an instant the
+# replay clock had not released, and a floor that quietly sees the future makes every method
+# above it look unimpressive for the wrong reason.
+#
+# Two naive forecasts are emitted. `persistence` is the last PM2.5 the station delivered;
+# `seasonal` is the reading from twenty-four hours before the prediction time. Which one is
+# the prediction is the task config's choice, and the other rides along as a diagnostic.
+#
+# Unlike USCRN and Enefit, availability here is **simulated** — the dataset records none — so
+# what this floor is allowed to see is a declared assumption rather than a measurement. The
+# scenario name is in every record's derivation and in the run manifest; a floor computed
+# under `staggered` is not comparable to one computed under `prompt`.
+#
+# The floor reads the measurement stream, never `beijing_target`. Targets are the same
+# quantity with a different reveal delay, which is exactly why the separation is structural.
+schema_version: "0.1.0"
+name: beijing_m0_naive
+
+sources:
+  - source_id: beijing_air
+    feature_name: pm2_5
+    kind: measurement
+    value_type: number
+    unit: microgram / meter ** 3
+    max_input_rate_per_hour: 2
+    description: Fine particulates, as delivered under the declared arrival scenario.
+
+nodes:
+  - id: persistence
+    op: last
+    params: {source: beijing_air, feature: pm2_5}
+  - id: seasonal
+    op: lag
+    params: {source: beijing_air, feature: pm2_5, lag: 24h}
+
+outputs:
+  - persistence
+  - seasonal
