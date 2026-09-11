@@ -670,14 +670,43 @@ Exit criteria continue to govern progress more strongly than elapsed time.
 
 ### Phase 0 — Freeze the question and audit prior work (effort weeks 1–2)
 
+*(Ticked 2026-09-11, months after the work was done: every artifact below existed and was in
+use, and the boxes were simply never marked. Recorded rather than silently corrected, because
+a plan whose checkboxes drift from its repository stops being usable as a status document —
+which is how Phase 6's reference-result task came to still name a blocker that had been
+removed.)*
+
 **Tasks**
 
-- [ ] Complete the literature matrix and novelty memo.
-- [ ] Inspect all relevant `iot-fusion` source, tests, configuration examples, and publication algorithms.
-- [ ] Write the one-page problem statement, RQs, intended contributions, and exclusions.
-- [ ] Decide the minimum datasets and compute/API budget.
-- [ ] Create a risk register and decision log.
-- [ ] Choose a working open-source license compatible with dependencies and intended release.
+- [x] Complete the literature matrix and novelty memo. *(`docs/literature_matrix.csv`, eleven
+  sources across sixteen analysis columns — problem, input data, temporal semantics, generated
+  representation, verification, feedback loop, datasets, baselines, metrics, limitations and
+  relationship to this work — and `docs/novelty.md`, which separates the load-bearing claim from
+  the three things that must *not* be claimed as novel. `docs/to_update_related_work_and_novelty_review.md`
+  extends both with the predecessor line, including `koprivec2020fastener`, whose algorithm is
+  now the M3f baseline.)*
+- [x] Inspect all relevant `iot-fusion` source, tests, configuration examples, and publication
+  algorithms. *(`docs/original_system_audit.md`: components, the temporal assumptions of the
+  original engine, and the fixtures worth reusing. Read at revision 708053a. The audit is what
+  supplies this project's central contrast — the predecessor's formal definition specifies
+  *what* to compute and never *when* a value is knowable — and its findings are cited by name
+  in the decision log where they drove a design choice.)*
+- [x] Write the one-page problem statement, RQs, intended contributions, and exclusions.
+  *(`docs/problem_statement.md`: the problem, the central claim with its two independent
+  refutation conditions, the research questions, the intended contributions, and an explicit
+  out-of-scope list for the first paper.)*
+- [x] Decide the minimum datasets and compute/API budget. *(Datasets: section 8.6 commits to
+  Enefit, USCRN, Beijing and the synthetic oracle, and all three real ones are downloaded and
+  replaying. Budget: OpenRouter at $50/day, decided 2026-09-09 and recorded in the decision log
+  and `docs/execution_plan.md`. The decision log entry notes what was *not* evaluated —
+  direct provider APIs — which is the honest form of a decision made on convenience.)*
+- [x] Create a risk register and decision log. *(`docs/risk_register.md` and
+  `docs/decision_log.md`. The log has since become the project's primary record: every design
+  reversal, every defect found in real data, and every measurement that contradicted an
+  expectation is entered there with the evidence that forced it.)*
+- [x] Choose a working open-source license compatible with dependencies and intended release.
+  *(MIT, in `LICENSE`. Compatible with every declared dependency, including `fastener`, which is
+  MIT itself.)*
 
 **Artifacts**
 
@@ -687,7 +716,7 @@ Exit criteria continue to govern progress more strongly than elapsed time.
 - `docs/risk_register.md`
 - `docs/original_system_audit.md`
 
-**Exit criterion:** Every claimed contribution is contrasted against at least the minimum reading list, and the project has one falsifiable central claim.
+**Exit criterion:** Every claimed contribution is contrasted against at least the minimum reading list, and the project has one falsifiable central claim. *(Met. `docs/problem_statement.md` states the criterion in its own terms and the contrast is carried in the matrix and the novelty memo; the central claim has two independent refutation conditions, and Phase 6 has been actively testing one of them — whether the expert baseline M2 is a bar worth clearing — rather than assuming it.)*
 
 ### Phase 1 — Repository and deterministic skeleton (effort week 2)
 
@@ -823,10 +852,17 @@ generator this repository wrote.)*
   single-threaded and deterministic so that section 12's byte-identical rerun survives a
   boosted-tree fit, with four capacity settings tuned on validation.)*
 - [ ] Reproduce at least one published or competition-quality reference result where feasible.
-  *(Blocked, and the blocker is named: Enefit is the dataset with a public leaderboard, and its
-  weather streams are not yet readable per prosumer — 112 grid points collapse onto one stream
-  per prediction unit, so `last(temperature)` returns an arbitrary one of them. The declared
-  entity graph of section 5.3 is what unblocks this.)*
+  *(Still blocked, but on a different thing than it was — this note replaces one written
+  before 2026-09-11 that named the weather blocker, which is now removed. The declared entity
+  graph of section 5.3 exists, the 112 grid points are 112 entities, and a program reaches its
+  county's stations through the `weather_stations` edge; `enefit_consumption.yaml` does exactly
+  that. What blocks the reference result now is **entity pooling**: the Kaggle metric is MAE
+  across all 69 prediction units and both targets, so a leaderboard-comparable number needs the
+  whole panel, and the runtime fits one model across every entity a task names with nothing in
+  the feature vector saying which entity a row came from. Run that way, the naive floor — which
+  is per-entity by construction — beats every fitted method, as measured on 2026-09-11. Either
+  an entity feature or a per-entity fit unblocks this, and the same capability is what section
+  8.1's joint reporting by county or customer segment needs.)*
 - [x] Create a baseline result table directly from tracked output files. *(`vifusion evaluate`
   writes `results.txt`, `scores.json` and a run manifest carrying the raw-data hashes, the
   split hash, the task hash and each method's program hash.)*

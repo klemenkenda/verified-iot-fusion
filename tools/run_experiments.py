@@ -33,6 +33,20 @@ Usage::
     uv run python tools/run_experiments.py                # the whole grid
     uv run python tools/run_experiments.py --resume       # skip tasks already on disk
 
+One process per task is the way to use a many-core machine: the tasks are independent and
+write to separate directories, so the wall time becomes the longest task rather than the
+sum. Each process writes its own log, named by pid::
+
+    for t in configs/tasks/enefit_consumption_day_ahead.yaml \
+             configs/tasks/enefit_consumption_day_ahead_growth.yaml \
+             configs/tasks/uscrn_temperature_1h_archive.yaml \
+             configs/tasks/beijing_pm25_24h.yaml; do
+        uv run python -u tools/run_experiments.py --task "$t" &
+    done; wait
+
+Note that per-cell setup is *not* shared between processes, only within a task, so this
+trades a little repeated archive reading for a large reduction in wall time.
+
 Results land in ``artifacts/<task name>/`` exactly as `vifusion evaluate` writes them — note
 that this is the *task* name, so `enefit_consumption_day_ahead/` rather than the shorter
 `enefit_day_ahead/` that earlier hand-run `--output` paths used; those older directories are
@@ -44,6 +58,7 @@ the history survives the terminal.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import sys
 import tempfile
@@ -146,6 +161,47 @@ class Tracker:
 
     last_line: float = 0.0
 
+    task_plan: list[tuple[str, str, int]] = field(default_factory=list)
+    """Every cell this task will run. Needed to know what is still ahead, not merely behind."""
+
+    later_budget: int = 0
+    """Evaluations declared by every task queued after this one."""
+
+    later_cells: int = 0
+    """Cells queued after this one, each of which pays its own setup."""
+
+    fallback_rate: float = 3.8
+    fallback_setup: float = 90.0
+
+    def grid_eta(self) -> float:
+        """Seconds left in the **whole grid**, at what has actually been measured so far.
+
+        Put on the live line because the alternative was printing it between tasks, which on a
+        ten-hour grid means four times — not a progress indicator, a punctuation mark.
+
+        **Its weakness is worth stating rather than hiding.** The rate and the per-cell setup
+        come from cells already run, and later tasks are assumed to resemble them. They do not:
+        setup measured 25 seconds a cell on Enefit and 3m27s on the USCRN archive, because the
+        candidate replay scales with training rows. So the figure is sound for the task now
+        running and optimistic for what follows, and it corrects itself as each task starts
+        contributing its own measurements.
+        """
+        rate = self.observed_rate or self.fallback_rate
+        setup = self.overhead or self.fallback_setup
+
+        spent_here = 0
+        remaining_cells = 0
+        for method, predictor, total in self.task_plan:
+            cell = self.cells.get((method, predictor))
+            if cell is None:
+                spent_here += total
+                remaining_cells += 1
+            elif not cell.finished:
+                spent_here += max(total - cell.done, 0)
+                remaining_cells += 1
+        budget = spent_here + self.later_budget
+        return budget / rate + setup * (remaining_cells + self.later_cells)
+
     def __call__(self, method: str, predictor: str, done: int, total: int) -> None:
         key = (method, predictor)
         cell = self.cells.get(key)
@@ -193,16 +249,28 @@ class Tracker:
             cell_eta = "measuring rate"
         else:
             cell_eta = f"setup {_duration(cell.elapsed)}"
-        if not self.interactive:
-            now = time.monotonic()
-            if cell.done < cell.total and now - self.last_line < LOG_INTERVAL_SECONDS:
-                return
+
+        status = (
+            f"[{self.task_index}/{self.task_count}] {self.task_name} "
+            f"{cell.method}/{cell.predictor} {cell.done}/{cell.total}  {cell_eta}"
+        )
+        if self.task_plan:
+            status += f"  | grid ~{_duration(self.grid_eta())}"
+
+        # **The log ticks too, and on its own clock.** Until now it received only cell
+        # completions, so anyone following by `tail -f` saw nothing for minutes at a time and
+        # no ETA at all — which is most of the reason to follow a run in the first place. The
+        # display cadence below is about what a terminal can redraw; this is about what a log
+        # has to contain, and they are different questions.
+        now = time.monotonic()
+        due = now - self.last_line >= LOG_INTERVAL_SECONDS
+        if due:
             self.last_line = now
-            print(
-                f"  [{self.task_index}/{self.task_count}] {self.task_name} "
-                f"{cell.method}/{cell.predictor} {cell.done}/{cell.total}  {cell_eta}",
-                flush=True,
-            )
+            self._append(status)
+
+        if not self.interactive:
+            if due:
+                print("  " + status, flush=True)
             return
 
         bar = _bar(cell.done, cell.total)
@@ -221,6 +289,10 @@ class Tracker:
         else:
             sys.stdout.write(message.rstrip() + "\n")
         sys.stdout.flush()
+        self._append(message)
+
+    def _append(self, message: str) -> None:
+        """Timestamp a line into the run log, which outlives the terminal."""
         with self.log.open("a", encoding="utf-8") as handle:
             handle.write(f"{datetime.now(UTC).isoformat(timespec='seconds')} {message.strip()}\n")
 
@@ -314,9 +386,41 @@ def _preflight(
 
     outcomes: list[tuple[str, bool, str]] = []
     try:
+        opened = time.monotonic()
         for index, (_group, _path, task) in enumerate(tasks, start=1):
-            tracker = Tracker(task.name, index, len(tasks), log)
+            # The reduced plan, not the declared one: a preflight's ETA must describe the
+            # preflight. Projecting the frozen budgets here would report hours for a check
+            # that takes minutes.
+            later = [_plan(_reduced(item, evaluations)) for _, _, item in tasks[index:]]
+            tracker = Tracker(
+                task.name,
+                index,
+                len(tasks),
+                log,
+                task_plan=_plan(_reduced(task, evaluations)),
+                later_budget=sum(
+                    total
+                    for cells in later
+                    for _, _, total in cells
+                    if total > 1
+                ),
+                later_cells=sum(len(cells) for cells in later),
+            )
             started = time.monotonic()
+            # Announced before it starts, not only after it ends. A task that reads 28,349
+            # archive files says nothing for minutes, and a follower with no line to look at
+            # cannot tell that from a hang.
+            cells = len(_plan(task))
+            done_before = index - 1
+            if done_before:
+                mean = (started - opened) / done_before
+                projected = f", ~{_duration(mean * (len(tasks) - done_before))} left"
+            else:
+                projected = ""
+            tracker.note(
+                f"  [{index}/{len(tasks)}] {task.name} starting — {cells} cells "
+                f"at {evaluations} evaluations{projected}"
+            )
             try:
                 result = experiment.run_task(
                     _reduced(task, evaluations),
@@ -437,7 +541,12 @@ def main() -> int:
         return 2
 
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    log = REPO_ROOT / "artifacts" / "runs" / f"experiments-{stamp}.log"
+    # The pid is in the name because the tasks are meant to be run concurrently — one process
+    # per task is how a many-core machine turns a sixteen-hour grid into its longest task. Four
+    # processes started together share a second, so a timestamp alone would have them
+    # interleaving lines into one file, which is worse than no log: it reads as a single run
+    # whose cells overlap impossibly.
+    log = REPO_ROOT / "artifacts" / "runs" / f"experiments-{stamp}-{os.getpid()}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
 
     tasks = [(group, path, load_task(_resolve(path))) for group, path in selected]
@@ -481,7 +590,18 @@ def main() -> int:
             continue
 
         print(f"[{index}/{len(tasks)}] {task.name}")
-        tracker = Tracker(task.name, index, len(tasks), log)
+        later = [_plan(item) for _, _, item in tasks[index:]]
+        tracker = Tracker(
+            task.name,
+            index,
+            len(tasks),
+            log,
+            task_plan=_plan(task),
+            later_budget=sum(total for cells in later for _, _, total in cells if total > 1),
+            later_cells=sum(len(cells) for cells in later),
+            fallback_rate=rate,
+            fallback_setup=overhead,
+        )
         cell_start = time.monotonic()
         try:
             result = experiment.run_task(

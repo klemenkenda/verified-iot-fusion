@@ -45,6 +45,7 @@ from vifusion.evaluation.tasks import (
     revealed_by,
     with_features,
 )
+from vifusion.hashing import hash_object
 from vifusion.manifest import ArtifactRef, RunManifest, new_run_id, write_manifest
 from vifusion.models import predictors, search
 from vifusion.models.search import SearchBudget, SearchReport
@@ -672,6 +673,7 @@ def run_search(
     predictor_name: str = "ridge",
     penalty: float = DEFAULT_RIDGE_PENALTY,
     on_progress: search.Progress | None = None,
+    cache: dict[str, PreparedSpace] | None = None,
 ) -> tuple[ExecutionPlan, str, SearchReport, dict[str, Any]]:
     """Find a feature program by search, and return it compiled.
 
@@ -692,11 +694,22 @@ def run_search(
             f"{[source.source_id for source in sources]}"
         )
 
+    # **The whole space is prepared once per task, not once per cell.** Compiling every
+    # candidate and replaying it over the archive depends on the declared space, the entities
+    # and the split -- never on which strategy or predictor is about to spend the budget. Six
+    # searching cells therefore used to repeat identical work six times: measured on the
+    # preflight, 25s a cell on Enefit, 3m30s on the USCRN archive and 7m21s on Beijing, where
+    # it came to three quarters of an hour of pure repetition per task. The cache is keyed on
+    # what the preparation actually depends on, so two methods declaring different spaces still
+    # get their own, and it lives for one `run_task` call rather than across runs.
+    prepared = None if cache is None else cache.get(_space_key(method, entities))
+    if prepared is not None:
+        return _search_prepared(method, prepared, predictor_name, penalty, on_progress)
+
     accepted, rejected = search.validate_candidates(sources, proposed, graphs)
     if not accepted:
         raise TaskError(f"method {method.id}: the verifier rejected every candidate: {rejected}")
 
-    # One replay of every accepted candidate, shared by every evaluation below.
     combined = search.program_document(
         f"{method.id}_space", sources, accepted, entity_graphs=graphs
     )
@@ -722,12 +735,6 @@ def run_search(
             f"{len(training)} training, {len(validation)} validation"
         )
 
-    budget = SearchBudget(
-        evaluations=method.search.evaluations,
-        max_features=method.search.max_features,
-        strategy=method.search.strategy,
-        seed=method.search.seed,
-    )
     # The candidate matrix, for the strategies that weight features by mutual information
     # rather than by trial alone. Built from the *training* rows: the selection score already
     # reads validation, and letting the crossover see it too would put the selection fold into
@@ -746,30 +753,102 @@ def run_search(
             f"method {method.id}: every one of the {len(accepted)} accepted candidates was "
             "null on every training row; the space cannot be searched over this slice"
         )
-    accepted = live
 
-    columns, labels = _candidate_matrix(accepted, training)
-    report = search.search(
-        accepted,
-        _selection_score(training, validation, penalty, predictor_name),
-        budget,
-        selected_on="validation",
-        proposed=len(proposed),
-        rejected_by_code=rejected,
+    columns, labels = _candidate_matrix(live, training)
+    prepared = PreparedSpace(
+        method_id=method.id,
+        sources=sources,
+        graphs=graphs,
         space=space,
+        candidates=live,
+        training=training,
+        validation=validation,
         matrix=columns,
         target=labels,
+        proposed=len(proposed),
+        rejected=rejected,
         unresolved=unresolved,
+    )
+    if cache is not None:
+        cache[_space_key(method, entities)] = prepared
+    return _search_prepared(method, prepared, predictor_name, penalty, on_progress)
+
+
+@dataclass(frozen=True)
+class PreparedSpace:
+    """Everything a search needs that does not depend on the strategy or the predictor.
+
+    Separated so it can be computed once per task. What varies between cells is the budget's
+    strategy, the predictor the score is measured through, and the seed — none of which change
+    which candidates exist, which compile, or what they evaluate to on the selection rows.
+    """
+
+    method_id: str
+    sources: tuple[Any, ...]
+    graphs: tuple[Any, ...]
+    space: SearchSpace
+    candidates: tuple[Candidate, ...]
+    training: tuple[Example, ...]
+    validation: tuple[Example, ...]
+    matrix: tuple[tuple[float | None, ...], ...]
+    target: tuple[float, ...]
+    proposed: int
+    rejected: dict[str, int]
+    unresolved: int
+
+
+def _space_key(method: MethodSpec, entities: Sequence[str]) -> str:
+    """What a prepared space actually depends on.
+
+    The declared grid and the entities, and nothing else: the bundle, task and split are fixed
+    for the life of a `run_task` call, and the strategy, seed and predictor are what the cells
+    vary. Keyed on the declaration rather than on the method id so that two methods declaring
+    the same space share the preparation, which is exactly the M3/M3r/M3f case.
+    """
+    assert method.search is not None
+    return hash_object({"space": method.search.space, "entities": list(entities)})
+
+
+def _search_prepared(
+    method: MethodSpec,
+    prepared: PreparedSpace,
+    predictor_name: str,
+    penalty: float,
+    on_progress: search.Progress | None,
+) -> tuple[ExecutionPlan, str, SearchReport, dict[str, Any]]:
+    """Spend one cell's budget over an already-prepared space."""
+    assert method.search is not None
+    budget = SearchBudget(
+        evaluations=method.search.evaluations,
+        max_features=method.search.max_features,
+        strategy=method.search.strategy,
+        seed=method.search.seed,
+    )
+    report = search.search(
+        prepared.candidates,
+        _selection_score(prepared.training, prepared.validation, penalty, predictor_name),
+        budget,
+        selected_on="validation",
+        proposed=prepared.proposed,
+        rejected_by_code=prepared.rejected,
+        space=prepared.space,
+        matrix=prepared.matrix,
+        target=prepared.target,
+        unresolved=prepared.unresolved,
         on_progress=on_progress,
     )
 
     # In the order the search chose them, not in enumeration order: for forward selection
     # that order is informative — the first feature picked is the one that helped most — and
     # it keeps the discovered program's outputs aligned with what the report names.
-    by_id = {candidate.node_id: candidate for candidate in accepted}
+    by_id = {candidate.node_id: candidate for candidate in prepared.candidates}
     chosen = [by_id[node_id] for node_id in report.selected]
     document = search.program_document(
-        f"{method.id}_discovered", sources, chosen, catalogue=accepted, entity_graphs=graphs
+        f"{method.id}_discovered",
+        prepared.sources,
+        chosen,
+        catalogue=prepared.candidates,
+        entity_graphs=prepared.graphs,
     )
     final, final_diagnostics = parse_program(document)
     if final is None:
@@ -820,6 +899,10 @@ def run_task(
         raise TaskError(f"task {task.name!r} names no entities and the dataset produced none")
 
     card = cards.build(bundle, license=adapter.license, homepage=adapter.homepage)
+    # One prepared space per declared grid, shared by every searching cell of this task and
+    # discarded with it. Held for the task rather than the process: the archive's rows are the
+    # bulk of it, and keeping them past the run would trade an hour of repetition for a leak.
+    space_cache: dict[str, PreparedSpace] = {}
     results = []
     for method in task.methods:
         for predictor_name in task.predictors_for(method):
@@ -849,6 +932,7 @@ def run_task(
                         if on_progress is None
                         else _cell_progress(on_progress, method.id, predictor_name)
                     ),
+                    cache=space_cache,
                 )
             else:
                 plan, program_hash = compile_method(method, repo_root)
