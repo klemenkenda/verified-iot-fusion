@@ -21,8 +21,13 @@ Nothing here changes what is computed. The instrumentation is a callback the eva
 takes and ignores when absent, so a result produced under this script is the same result
 `vifusion evaluate` produces.
 
+Output is flushed line by line, but Python block-buffers stdout when it is redirected to a
+file. Run it with ``python -u`` (or ``PYTHONUNBUFFERED=1``) when piping to ``tee`` or a log,
+or the progress will arrive all at once at the end — which defeats the point of having it.
+
 Usage::
 
+    uv run python tools/run_experiments.py --preflight    # prove every config at a token budget
     uv run python tools/run_experiments.py --dry-run      # the plan and its cost, run nothing
     uv run python tools/run_experiments.py --only enefit  # the two Enefit tasks
     uv run python tools/run_experiments.py                # the whole grid
@@ -39,7 +44,9 @@ the history survives the terminal.
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
+import tempfile
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -63,6 +70,9 @@ GRID: tuple[tuple[str, str], ...] = (
     ("uscrn", "configs/tasks/uscrn_temperature_1h_archive.yaml"),
     ("beijing", "configs/tasks/beijing_pm25_24h.yaml"),
 )
+
+LOG_INTERVAL_SECONDS = 30.0
+"""How often a progress line is emitted when stdout is not a terminal."""
 
 FOLD = "validation"
 """Pre-freeze, so this is Phase 6 credibility work rather than the Phase 9 official run.
@@ -131,6 +141,10 @@ class Tracker:
     cells: dict[tuple[str, str], Cell] = field(default_factory=dict)
     current: Cell | None = None
     completed_overheads: list[float] = field(default_factory=list)
+    interactive: bool = field(default_factory=lambda: sys.stdout.isatty())
+    """Whether stdout is a terminal, which decides how progress is drawn rather than whether."""
+
+    last_line: float = 0.0
 
     def __call__(self, method: str, predictor: str, done: int, total: int) -> None:
         key = (method, predictor)
@@ -160,6 +174,15 @@ class Tracker:
         )
 
     def _render(self, cell: Cell) -> None:
+        """One progress line, drawn the way the destination can actually read.
+
+        **A terminal and a log file want opposite things.** A terminal wants one line rewritten
+        in place, which needs a carriage return and a full-width pad. A file wants whole lines
+        and nothing else — a carriage return there is not a redraw, it is a character, and the
+        first captured preflight lost its summary header and one task's result to exactly that.
+        So when stdout is not a terminal the bar is dropped and a plain line is emitted on an
+        interval, rarely enough that an hour-long cell does not produce an hour of noise.
+        """
         if cell.finished:
             return
         rate = cell.rate
@@ -170,6 +193,18 @@ class Tracker:
             cell_eta = "measuring rate"
         else:
             cell_eta = f"setup {_duration(cell.elapsed)}"
+        if not self.interactive:
+            now = time.monotonic()
+            if cell.done < cell.total and now - self.last_line < LOG_INTERVAL_SECONDS:
+                return
+            self.last_line = now
+            print(
+                f"  [{self.task_index}/{self.task_count}] {self.task_name} "
+                f"{cell.method}/{cell.predictor} {cell.done}/{cell.total}  {cell_eta}",
+                flush=True,
+            )
+            return
+
         bar = _bar(cell.done, cell.total)
         line = (
             f"  [{self.task_index}/{self.task_count}] {self.task_name} "
@@ -180,7 +215,11 @@ class Tracker:
         sys.stdout.flush()
 
     def note(self, message: str) -> None:
-        sys.stdout.write("\r" + message.ljust(110)[:110] + "\n")
+        """A line that must survive, whether the destination redraws or appends."""
+        if self.interactive:
+            sys.stdout.write("\r" + message.ljust(110)[:110] + "\n")
+        else:
+            sys.stdout.write(message.rstrip() + "\n")
         sys.stdout.flush()
         with self.log.open("a", encoding="utf-8") as handle:
             handle.write(f"{datetime.now(UTC).isoformat(timespec='seconds')} {message.strip()}\n")
@@ -236,6 +275,85 @@ def _estimate(cells: list[tuple[str, str, int]], rate: float, overhead: float) -
     return (budget / rate if rate else 0.0) + overhead * len(cells)
 
 
+def _reduced(task: TaskConfig, evaluations: int) -> TaskConfig:
+    """The same task with every searching budget cut to ``evaluations``.
+
+    Derived from the real config rather than from a copy kept beside it, so a preflight cannot
+    pass against a file the grid does not actually run. Everything else — the split, the
+    entities, the programs, the predictor grid, the declared edges — is untouched, because the
+    failures worth catching early live there rather than in the budget.
+    """
+    methods = []
+    for method in task.methods:
+        if method.search is not None:
+            reduced = method.search.model_copy(update={"evaluations": evaluations})
+            method = method.model_copy(update={"search": reduced})
+        methods.append(method)
+    return task.model_copy(update={"methods": tuple(methods)})
+
+
+def _preflight(
+    tasks: list[tuple[str, str, TaskConfig]], evaluations: int, fold: str, log: Path
+) -> int:
+    """Run each task at a token budget and report which configurations survive.
+
+    **Why this is worth twenty minutes.** The grid is most of a working day and its tasks run in
+    sequence, so a configuration error in the last one surfaces hours after the machine was
+    committed to it. Three of the four tasks have never executed a searching method at all —
+    they were validated only as far as parsing and the budget guard — and the failures that
+    would bite are the ones parsing cannot see: an archive that behaves differently at scale, a
+    space whose candidates all resolve to null, an edge declared but not published.
+
+    Nothing is written to ``artifacts/``. A preflight produces no figures and must not be
+    mistakable for a result.
+    """
+    scratch_root = tempfile.mkdtemp(prefix="vifusion-preflight-")
+    print(f"Preflight — {len(tasks)} task(s) at {evaluations} evaluations, fold {fold}")
+    print("  proving the configuration, not producing results; artifacts/ is untouched")
+    print()
+
+    outcomes: list[tuple[str, bool, str]] = []
+    try:
+        for index, (_group, _path, task) in enumerate(tasks, start=1):
+            tracker = Tracker(task.name, index, len(tasks), log)
+            started = time.monotonic()
+            try:
+                result = experiment.run_task(
+                    _reduced(task, evaluations),
+                    repo_root=REPO_ROOT,
+                    fold=fold,  # type: ignore[arg-type]
+                    on_progress=tracker,
+                )
+                experiment.write_results(Path(scratch_root) / task.name, result)
+            except Exception as error:
+                outcomes.append((task.name, False, f"{type(error).__name__}: {error}"))
+                tracker.note(f"  FAILED {task.name}: {type(error).__name__}: {error}")
+                continue
+            outcomes.append(
+                (
+                    task.name,
+                    True,
+                    f"{len(result.results)} cells in {_duration(time.monotonic() - started)}",
+                )
+            )
+            tracker.note(f"  ok {task.name} — {len(result.results)} cells")
+    finally:
+        shutil.rmtree(scratch_root, ignore_errors=True)
+
+    print()
+    print("Preflight summary")
+    for name, ok, detail in outcomes:
+        print(f"  {'PASS' if ok else 'FAIL'}  {name:<36} {detail}")
+    failed = [name for name, ok, _ in outcomes if not ok]
+    if failed:
+        print()
+        print(f"{len(failed)} task(s) would fail the grid: {', '.join(failed)}")
+        return 1
+    print()
+    print("every task runs end to end; the grid is safe to start")
+    return 0
+
+
 def _resolve(path: str) -> Path:
     """Repository-relative by default, absolute when given one."""
     candidate = Path(path)
@@ -274,6 +392,19 @@ def main() -> int:
         help="skip tasks whose results.txt already exists",
     )
     parser.add_argument(
+        "--preflight",
+        nargs="?",
+        type=int,
+        const=25,
+        default=None,
+        metavar="N",
+        help=(
+            "run every selected task end to end at a tiny budget (default 25 evaluations) and "
+            "report which survive. Results go to a temporary directory and artifacts/ is left "
+            "untouched, so this proves the configuration without producing figures."
+        ),
+    )
+    parser.add_argument(
         "--rate",
         type=float,
         default=3.8,
@@ -310,6 +441,14 @@ def main() -> int:
     log.parent.mkdir(parents=True, exist_ok=True)
 
     tasks = [(group, path, load_task(_resolve(path))) for group, path in selected]
+
+    if args.preflight is not None and not args.dry_run:
+        return _preflight(tasks, args.preflight, args.fold, log)
+    if args.preflight is not None:
+        print(
+            f"Preflight would run {len(tasks)} task(s) at {args.preflight} evaluations "
+            "into a temporary directory."
+        )
 
     print(f"Gate B grid — {len(tasks)} task(s), fold {args.fold}\n")
     rate, overhead = args.rate, args.overhead
