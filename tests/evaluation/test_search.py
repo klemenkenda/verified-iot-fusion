@@ -10,6 +10,7 @@ the search cannot propose a feature reading the target.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,7 @@ from vifusion.adapters.splits import SplitManifest
 from vifusion.dsl import registry
 from vifusion.dsl.schema import EntityGraphSchema
 from vifusion.evaluation import experiment
-from vifusion.evaluation.tasks import TaskConfig
+from vifusion.evaluation.tasks import MethodSpec, TaskConfig
 from vifusion.models import search
 from vifusion.models.search import SearchBudget, SearchError
 from vifusion.models.search_space import (
@@ -422,3 +423,97 @@ def test_a_bundle_used_for_search_offers_no_targets(uscrn_search_bundle: Dataset
     """The property the whole space rests on, asserted where the space is built."""
     offered = {source.source_id for source in uscrn_search_bundle.searchable_sources()}
     assert uscrn.FINAL_SOURCE_ID not in offered
+
+# --- the edges a search may read through ------------------------------------------------------
+
+
+def test_a_cross_entity_candidate_needs_its_edge_declared_in_the_assembled_program() -> None:
+    """The defect of 2026-09-11, as a test.
+
+    `enumerate_candidates` honoured a declared edge, but `run_search` never handed it one, so
+    the cross-entity operator was silently absent from every searched space. This pins the
+    other half of the same wiring: even with the candidates in hand, the *program* built from
+    them must carry the declaration, or the compiler rejects each one with E-RESOLVE-008 and
+    the space reports itself as entirely invalid.
+    """
+    graphs = [EntityGraphSchema(name="neighbours", max_related_entities=4)]
+    candidates = enumerate_candidates(UPDATE_SOURCES, NARROW, graphs)
+    cross = [
+        candidate
+        for candidate in candidates
+        if (operator := registry.get(candidate.op)) is not None and operator.cross_entity
+    ]
+    assert cross, "no cross-entity candidate was generated to test with"
+
+    undeclared, rejected = search.validate_candidates(UPDATE_SOURCES, cross)
+    assert not undeclared, "a cross-entity candidate compiled without its edge declared"
+    assert rejected, "the rejection was not reported by code"
+
+    declared, _ = search.validate_candidates(UPDATE_SOURCES, cross, graphs)
+    assert len(declared) == len(cross)
+
+    document = search.program_document("doc", UPDATE_SOURCES, cross, entity_graphs=graphs)
+    assert document["entity_graphs"] == [
+        {"name": "neighbours", "max_related_entities": 4}
+    ]
+
+
+def test_a_document_without_edges_does_not_carry_an_empty_declaration() -> None:
+    """A dataset with no edges should produce the same program it produced before."""
+    plain = enumerate_candidates(UPDATE_SOURCES, NARROW)
+    document = search.program_document("doc", UPDATE_SOURCES, plain[:2])
+    assert "entity_graphs" not in document
+
+
+def test_a_search_refuses_an_edge_its_dataset_does_not_publish(
+    uscrn_search_bundle: DatasetBundle,
+) -> None:
+    """Candidates naming an absent edge would be rejected one by one and counted as invalid
+    proposals, which reads as a weak search rather than as the configuration error it is."""
+    method = _searching_method({"entity_graphs": [{"name": "ghost", "max_related_entities": 2}]})
+    with pytest.raises(experiment.TaskError, match="ghost"):
+        experiment._check_declared_edges(
+            method, uscrn_search_bundle, SearchSpace(**method.search.space).graph_schemas()
+        )
+
+
+def test_a_search_refuses_a_published_edge_it_has_not_declared(
+    uscrn_search_bundle: DatasetBundle,
+) -> None:
+    """The defect itself: the search loses a whole class of features and says nothing, while
+    the hand-written methods keep reading through the edge."""
+    with_edge = replace(
+        uscrn_search_bundle, entity_graphs={"neighbours": {"11111": ("22222",)}}
+    )
+    method = _searching_method({})
+    with pytest.raises(experiment.TaskError, match="neighbours"):
+        experiment._check_declared_edges(
+            method, with_edge, SearchSpace(**method.search.space).graph_schemas()
+        )
+
+
+def test_a_search_accepts_a_dataset_whose_every_edge_it_declares(
+    uscrn_search_bundle: DatasetBundle,
+) -> None:
+    with_edge = replace(
+        uscrn_search_bundle, entity_graphs={"neighbours": {"11111": ("22222",)}}
+    )
+    method = _searching_method(
+        {"entity_graphs": [{"name": "neighbours", "max_related_entities": 4}]}
+    )
+    experiment._check_declared_edges(
+        method, with_edge, SearchSpace(**method.search.space).graph_schemas()
+    )
+
+
+def _searching_method(space: dict[str, object]) -> MethodSpec:
+    return MethodSpec(
+        id="M3",
+        search={
+            "strategy": "greedy",
+            "evaluations": 10,
+            "max_features": 2,
+            "seed": 1,
+            "space": {**SEARCH_SPACE, **space},
+        },
+    )

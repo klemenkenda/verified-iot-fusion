@@ -1906,3 +1906,74 @@ M2/ridge                      0.6172   20.4822   |  M2/ridge           0.0457   
   labelled as such. Neither is a baseline; `M1+lf` in particular is a feature hand-picked after
   seeing M2 win, and reporting it as a baseline would be a rigged comparison.
 - **Phase / gate:** Phase 6, Gate B — and the motivation for running M3 next.
+
+### 2026-09-11 — A searching method could not see a declared entity graph, and must now declare one
+
+- **The defect:** `run_search` called `enumerate_candidates(sources, space)` without the
+  bundle's entity graphs. `enumerate_candidates` generates a cross-entity operator only for a
+  named edge, so **no searched space on any dataset has ever contained a cross-entity feature.**
+  A second half of the same wiring was missing downstream: `program_document` emitted no
+  `entity_graphs` block, so even with such candidates in hand every one would have been
+  rejected at compile time with E-RESOLVE-008 and counted as an invalid proposal.
+- **Where it bit.** USCRN and Beijing declare no edges and lose nothing. Enefit publishes
+  `weather_stations`, and its searched space held **201 candidates containing no weather at
+  all** — while M1 and M2 both read the county's temperature through that edge. M3 would have
+  lost the Gate B comparison for a reason having nothing to do with search quality, on the one
+  dataset where that comparison matters most.
+- **Decision: the bound is declared in the task, not taken from the bundle.** What a search may
+  assume about an edge is an experimental parameter, exactly like the window grid;
+  `max_related_entities` is the state bound a cross-entity operator is sized by, so deriving it
+  from whatever the archive happens to contain would let the search's memory cost change with
+  the data. Both Enefit tasks declare `weather_stations` at 6, the same figure
+  `enefit_consumption.yaml` declares and the largest fan-out any prediction unit has.
+- **A mismatch in either direction is now refused**, because both are silent otherwise. An edge
+  the dataset publishes and the space omits removes a whole class of features and looks like
+  nothing; an edge declared but absent produces candidates rejected one by one, reported as an
+  invalid-proposal rate that is really a configuration error.
+- **The fix is not cosmetic, and the pilot says so.** In a 600-evaluation pilot on unit 65,
+  greedy forward selection's **first pick was
+  `enefit_weather_actual_temperature_cross_entity_mean_weather_stations`** — the cross-entity
+  weather read that did not exist in the space before today. The search's single most valuable
+  feature was one it previously could not see.
+- **Budgets, measured 2026-09-11 and frozen per task** by the `budget_for` rule: USCRN archive
+  264 candidates to 3500 evaluations; Enefit 205 to 2500 (201 before the edge was declared —
+  the count moves, the budget does not, since both round to the same 500); Beijing 459 to 6000.
+- **Regression tests:** `test_a_cross_entity_candidate_needs_its_edge_declared_in_the_assembled_program`
+  pins both halves — a cross-entity candidate compiles only when the document carries the
+  declaration — plus the two mismatch refusals and the no-edge case, in
+  `tests/evaluation/test_search.py`.
+- **Also fixed:** `entity_graphs:` written with nothing under it parses as None rather than an
+  empty list. It now reaches the mismatch check, which names the missing edge, instead of a
+  `TypeError` from inside the space.
+- **Phase / gate:** Phase 6; a prerequisite for the M3 runs and an input to the Gate C freeze.
+
+### 2026-09-11 — M3 cost, measured: roughly ten hours for the full grid
+
+- **What was measured:** M3 on `enefit_consumption_day_ahead` (unit 65, 8,734 training rows) at
+  100 and 600 evaluations, each predictor separately, so fixed cost and marginal cost separate.
+
+```
+                100 evals   600 evals   marginal        fixed
+M3/ridge             96 s      227 s    0.26 s/eval     ~70 s
+M3/lightgbm         107 s      238 s    0.26 s/eval     ~81 s
+```
+
+- **The marginal cost is identical for both predictors**, which says the per-evaluation cost is
+  dominated by assembling and scoring a feature subset rather than by the model fit. That is
+  worth knowing before anyone tries to speed this up by simplifying the predictor grid.
+- **Extrapolated to the full grid** — two strategies by two predictors per task: Enefit about 12
+  minutes a cell, so roughly 48 minutes per task and 1.6 hours for both Enefit tasks. USCRN
+  (23,197 rows, 3,500 evaluations) and Beijing (25,533 rows, 6,000 evaluations) scale with row
+  count, giving roughly 2.7 and 5.3 hours. **About ten hours single-threaded**, and the tasks
+  are independent so section 11's instruction to parallelise applies directly.
+- **The row-count scaling is an assumption, not a measurement.** Only Enefit was timed; the
+  USCRN and Beijing figures assume per-evaluation cost grows linearly with training rows.
+- **The pilot numbers must not be read as results.** Greedy forward selection spends roughly one
+  candidate sweep per feature added — 205 candidates here — so 600 evaluations buys three
+  features against M2's thirteen, and M3/ridge's R-squared of 0.0901 at that point says nothing
+  about where it lands at 2,500. The prediction the ablation generated, that M3 should match or
+  beat M2 on Enefit, is not yet tested.
+- **One clean number the pilot does give:** all 205 Enefit candidates compiled, so the non-LLM
+  invalid-proposal rate of section 9.5 is 0% on this dataset — the figure the LLM's rate will
+  be compared against.
+- **Phase / gate:** Phase 6, and the Phase 8 pilot's cost input.

@@ -32,6 +32,7 @@ from vifusion.adapters.base import DatasetBundle, canonical_log
 from vifusion.adapters.records_file import load_program
 from vifusion.adapters.splits import Fold, SplitManifest
 from vifusion.compiler.compile import ExecutionPlan, compile_program, parse_program
+from vifusion.dsl.schema import EntityGraphSchema
 from vifusion.environment import environment_lock_hash, git_state, hardware
 from vifusion.evaluation import metrics
 from vifusion.evaluation.tasks import (
@@ -561,6 +562,52 @@ def _selection_score(
     return score
 
 
+def _check_declared_edges(
+    method: MethodSpec,
+    bundle: DatasetBundle,
+    declared: Sequence[EntityGraphSchema],
+) -> None:
+    """A searching method must account for every edge its dataset publishes.
+
+    **Found 2026-09-11.** `run_search` enumerated candidates without passing the bundle's
+    entity graphs, so a cross-entity operator was never generated — `enumerate_candidates`
+    skips it when no edge is named. On Enefit, which publishes `weather_stations`, that meant
+    a search over 201 candidates containing no weather at all, while both M1 and M2 read the
+    county's temperature through that edge. M3 would have lost the comparison for a reason
+    having nothing to do with search.
+
+    Silence is the wrong default here in both directions. An undeclared edge costs the search
+    a whole class of features and looks like nothing; an edge declared but absent from the
+    bundle produces candidates the compiler rejects one by one with E-RESOLVE-008, reported as
+    an invalid-proposal rate that is really a configuration error. So both are refused, and a
+    task that genuinely wants no cross-entity features says so by declaring
+    ``max_related_entities: 0`` — which the schema rejects — or, honestly, by not using a
+    dataset that publishes edges.
+    """
+    published = set(bundle.entity_graphs or {})
+    named = {graph.name for graph in declared}
+
+    missing = sorted(published - named)
+    if missing:
+        raise TaskError(
+            f"method {method.id} searches, but its space declares no bound for the "
+            f"{'edge' if len(missing) == 1 else 'edges'} {', '.join(missing)} that "
+            f"{bundle.dataset} publishes. A cross-entity operator is generated only for a "
+            "declared edge, so leaving it out silently removes every cross-entity feature "
+            "from the space while the hand-written methods keep reading through it. Declare "
+            "it under the method's `space.entity_graphs` as {name, max_related_entities}."
+        )
+
+    unknown = sorted(named - published)
+    if unknown:
+        raise TaskError(
+            f"method {method.id} declares the search "
+            f"{'edge' if len(unknown) == 1 else 'edges'} {', '.join(unknown)}, which "
+            f"{bundle.dataset} does not publish; every candidate naming it would be rejected "
+            "at compile time and counted as an invalid proposal."
+        )
+
+
 def run_search(
     method: MethodSpec,
     bundle: DatasetBundle,
@@ -581,19 +628,23 @@ def run_search(
     assert method.search is not None
     space = SearchSpace(**method.search.space)
     sources = bundle.searchable_sources()
-    proposed = enumerate_candidates(sources, space)
+    graphs = space.graph_schemas()
+    _check_declared_edges(method, bundle, graphs)
+    proposed = enumerate_candidates(sources, space, graphs)
     if not proposed:
         raise TaskError(
             f"method {method.id}: the search space is empty over "
             f"{[source.source_id for source in sources]}"
         )
 
-    accepted, rejected = search.validate_candidates(sources, proposed)
+    accepted, rejected = search.validate_candidates(sources, proposed, graphs)
     if not accepted:
         raise TaskError(f"method {method.id}: the verifier rejected every candidate: {rejected}")
 
     # One replay of every accepted candidate, shared by every evaluation below.
-    combined = search.program_document(f"{method.id}_space", sources, accepted)
+    combined = search.program_document(
+        f"{method.id}_space", sources, accepted, entity_graphs=graphs
+    )
     parsed, diagnostics = parse_program(combined)
     if parsed is None:
         raise TaskError(f"method {method.id}: {'; '.join(str(d) for d in diagnostics)}")
@@ -638,7 +689,7 @@ def run_search(
     by_id = {candidate.node_id: candidate for candidate in accepted}
     chosen = [by_id[node_id] for node_id in report.selected]
     document = search.program_document(
-        f"{method.id}_discovered", sources, chosen, catalogue=accepted
+        f"{method.id}_discovered", sources, chosen, catalogue=accepted, entity_graphs=graphs
     )
     final, final_diagnostics = parse_program(document)
     if final is None:

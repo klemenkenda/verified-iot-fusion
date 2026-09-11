@@ -111,6 +111,65 @@ methods:
       sharper claim than "engineered features help", and one the searching methods can be
       tested against directly.
 
+  # The budget is 2500 candidate evaluations for both searching methods, from the rule in
+  # evaluation.experiment.budget_for: max_features x the candidate count the declared grid
+  # produces over this dataset's searchable sources, rounded up to the next 500. Measured
+  # 2026-09-11 over the real archive: 205 candidates. That figure is a property of the
+  # *space* rather than of a strategy, so greedy, random and later the LLM conditions all
+  # spend the same number here. Re-freeze it if the operator registry or the grid changes.
+  #
+  # Adding the declared edge below moves the count from 201 to 205; the budget is unchanged
+  # because both round to the same 500.
+  - id: M3
+    search:
+      strategy: greedy
+      evaluations: 2500
+      max_features: 12
+      seed: 20260911
+      space:
+        timezone: Europe/Tallinn
+        entity_graphs:
+          # Declared, not taken from the bundle: what a search may assume about an edge is an
+          # experimental parameter like the window grid, and `max_related_entities` is the
+          # state bound a cross-entity operator is sized by. Six is the largest fan-out any
+          # prediction unit has, the same figure enefit_consumption.yaml declares.
+          #
+          # **Without this block the search would contain no weather at all** while M1 and M2
+          # both read the county's temperature through this edge -- the defect fixed on
+          # 2026-09-11. A run now refuses the omission rather than searching the smaller space
+          # in silence.
+          - name: weather_stations
+            max_related_entities: 6
+    description: >-
+      Non-LLM automated search over the operator registry, forward selection. The baseline H1
+      actually has to clear: section 9.1 expects it to be strong, and a weak one would make
+      the headline claim unfalsifiable rather than easy.
+
+  - id: M3r
+    search:
+      strategy: random
+      evaluations: 2500
+      max_features: 12
+      seed: 20260911
+      space:
+        timezone: Europe/Tallinn
+        entity_graphs:
+          # Declared, not taken from the bundle: what a search may assume about an edge is an
+          # experimental parameter like the window grid, and `max_related_entities` is the
+          # state bound a cross-entity operator is sized by. Six is the largest fan-out any
+          # prediction unit has, the same figure enefit_consumption.yaml declares.
+          #
+          # **Without this block the search would contain no weather at all** while M1 and M2
+          # both read the county's temperature through this edge -- the defect fixed on
+          # 2026-09-11. A run now refuses the omission rather than searching the smaller space
+          # in silence.
+          - name: weather_stations
+            max_related_entities: 6
+    description: >-
+      The same budget spent at random rather than greedily. Reported beside M3 because
+      "random search over a well-designed registry" is the phrase a reviewer will have in
+      mind, and the two are different baselines rather than two names for one.
+
 rationale: >-
   A result that says "every method scores at or below zero" is worth reporting only if it is
   accompanied by the reason, and the reason is measurable: the fold boundary crosses a growth

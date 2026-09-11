@@ -89,6 +89,38 @@ methods:
       bounded last-value that returns null rather than a stale reading, staleness, gap counts,
       and a within-source anomaly. The human bar H1 must clear.
 
+  # The budget is 6000 candidate evaluations for both searching methods, from the rule in
+  # evaluation.experiment.budget_for: max_features x the candidate count the declared grid
+  # produces over this dataset's searchable sources, rounded up to the next 500. Measured
+  # 2026-09-11 over the real archive: 459 candidates. That figure is a property of the
+  # *space* rather than of a strategy, so greedy, random and later the LLM conditions all
+  # spend the same number here. Re-freeze it if the operator registry or the grid changes.
+  - id: M3
+    search:
+      strategy: greedy
+      evaluations: 6000
+      max_features: 12
+      seed: 20260911
+      space:
+        timezone: Asia/Shanghai
+    description: >-
+      Non-LLM automated search over the operator registry, forward selection. The baseline H1
+      actually has to clear: section 9.1 expects it to be strong, and a weak one would make
+      the headline claim unfalsifiable rather than easy.
+
+  - id: M3r
+    search:
+      strategy: random
+      evaluations: 6000
+      max_features: 12
+      seed: 20260911
+      space:
+        timezone: Asia/Shanghai
+    description: >-
+      The same budget spent at random rather than greedily. Reported beside M3 because
+      "random search over a well-designed registry" is the phrase a reviewer will have in
+      mind, and the two are different baselines rather than two names for one.
+
 rationale: >-
   This dataset earns its place by being the one where availability is *not* recorded, and the
   honest use of it is comparative: the same task under three declared arrival regimes says how

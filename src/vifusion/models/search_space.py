@@ -59,6 +59,19 @@ class SearchSpace:
     """Cap on combined features. Unbounded pairing is quadratic in the leaf count and the
     pairs it adds late are mostly noise; the cap keeps the space enumerable and reportable."""
 
+    entity_graphs: tuple[Any, ...] = ()
+    """Declared edges a searching method may read through, as ``{name, max_related_entities}``.
+
+    **Declared here rather than taken from the dataset, and that is the point.** The bundle
+    carries the edge's *data*; what a search is allowed to assume about it is an experimental
+    parameter, exactly like the window grid. `max_related_entities` is the state bound a
+    cross-entity operator is sized by, so deriving it from whatever the archive happens to
+    contain would let the search's memory cost change with the data.
+
+    Empty by default. A task whose dataset publishes an edge must either declare it here or
+    say so explicitly -- `run_search` refuses the mismatch rather than silently searching a
+    space with no cross-entity features in it, which is what it did until 2026-09-11."""
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "windows": list(self.windows),
@@ -70,7 +83,21 @@ class SearchSpace:
             "calendar": self.calendar,
             "arithmetic": list(self.arithmetic),
             "max_arithmetic_pairs": self.max_arithmetic_pairs,
+            "entity_graphs": [
+                {"name": graph.name, "max_related_entities": graph.max_related_entities}
+                for graph in self.graph_schemas()
+            ],
         }
+
+    def graph_schemas(self) -> tuple[EntityGraphSchema, ...]:
+        """The declared edges as schemas, however they were written in the task config."""
+        # `entity_graphs:` written with nothing under it parses as None rather than as an
+        # empty list. Treating that as "no edges declared" sends it to the caller's mismatch
+        # check, which says which edge is missing; raising a TypeError here would not.
+        return tuple(
+            graph if isinstance(graph, EntityGraphSchema) else EntityGraphSchema(**graph)
+            for graph in (self.entity_graphs or ())
+        )
 
 
 @dataclass(frozen=True)

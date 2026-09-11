@@ -33,7 +33,7 @@ from typing import Any, Literal
 
 from vifusion.compiler.compile import compile_program, parse_program
 from vifusion.determinism import make_rng
-from vifusion.dsl.schema import DSL_SCHEMA_VERSION, SourceSchema
+from vifusion.dsl.schema import DSL_SCHEMA_VERSION, EntityGraphSchema, SourceSchema
 from vifusion.models.search_space import Candidate, SearchSpace, describe
 from vifusion.runtime.batch import BATCH_LOWERINGS
 
@@ -118,6 +118,7 @@ def program_document(
     sources: Sequence[SourceSchema],
     candidates: Sequence[Candidate],
     catalogue: Sequence[Candidate] | None = None,
+    entity_graphs: Sequence[EntityGraphSchema] = (),
 ) -> dict[str, Any]:
     """Assemble a feature program from a set of candidates.
 
@@ -130,6 +131,11 @@ def program_document(
     matters when one candidate is compiled on its own — a combined feature's inputs are then
     outside the selection, and without the full space to resolve against there is no program
     to compile at all.
+
+    ``entity_graphs`` are the declared edges the assembled program may read through. A
+    cross-entity candidate names one in its ``entity_ref``, and a program that omits the
+    declaration is rejected with E-RESOLVE-008 — so a search handed cross-entity candidates
+    and no declarations would reject every one of them and report the space as unverifiable.
     """
     known = list(catalogue) if catalogue is not None else list(candidates)
     by_id = {candidate.node_id: candidate for candidate in [*known, *candidates]}
@@ -151,17 +157,24 @@ def program_document(
     for candidate in candidates:
         add(candidate)
 
-    return {
+    document: dict[str, Any] = {
         "schema_version": DSL_SCHEMA_VERSION,
         "name": name,
         "sources": [source.model_dump(mode="json", exclude_none=True) for source in sources],
         "nodes": [nodes[node_id].node() for node_id in nodes],
         "outputs": [candidate.node_id for candidate in candidates],
     }
+    if entity_graphs:
+        document["entity_graphs"] = [
+            graph.model_dump(mode="json", exclude_none=True) for graph in entity_graphs
+        ]
+    return document
 
 
 def validate_candidates(
-    sources: Sequence[SourceSchema], candidates: Sequence[Candidate]
+    sources: Sequence[SourceSchema],
+    candidates: Sequence[Candidate],
+    entity_graphs: Sequence[EntityGraphSchema] = (),
 ) -> tuple[tuple[Candidate, ...], dict[str, int]]:
     """Compile each candidate on its own, keeping those the verifier accepts.
 
@@ -173,7 +186,11 @@ def validate_candidates(
     rejected: dict[str, int] = {}
     for candidate in candidates:
         document = program_document(
-            f"candidate_{candidate.node_id}", sources, [candidate], catalogue=candidates
+            f"candidate_{candidate.node_id}",
+            sources,
+            [candidate],
+            catalogue=candidates,
+            entity_graphs=entity_graphs,
         )
         program, diagnostics = parse_program(document)
         if program is None:

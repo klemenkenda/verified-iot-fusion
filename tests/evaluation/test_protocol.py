@@ -12,12 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from vifusion.adapters import registry, uscrn
+from vifusion.adapters import beijing, enefit, registry, uscrn
 from vifusion.dsl.schema import SourceSchema
 from vifusion.evaluation import metrics
 from vifusion.evaluation.experiment import RIDGE_PENALTY_GRID, budget_for
 from vifusion.evaluation.tasks import load_task
-from vifusion.models.search_space import DEFAULT_SPACE, enumerate_candidates
+from vifusion.models.search_space import DEFAULT_SPACE, SearchSpace, enumerate_candidates
 
 TASKS = Path(__file__).resolve().parents[2] / "configs" / "tasks"
 
@@ -117,8 +117,12 @@ def test_a_declared_budget_covers_the_space_it_searches(task_file: str) -> None:
     sources = _searchable_sources(adapter.name)
     for method in searching:
         assert method.search is not None
-        space = DEFAULT_SPACE if not method.search.space else None
-        candidates = enumerate_candidates(sources, space or DEFAULT_SPACE)
+        # The space the method *declares*, not the default. They differ in ways that change
+        # the count: a declared entity graph adds one cross-entity candidate per numeric
+        # source, and a task that declared an edge while the budget was frozen against the
+        # default would be under-budgeted by exactly the features that edge buys.
+        space = SearchSpace(**method.search.space) if method.search.space else DEFAULT_SPACE
+        candidates = enumerate_candidates(sources, space, space.graph_schemas())
         required = budget_for(len(candidates), method.search.max_features)
         assert method.search.evaluations >= required, (
             f"{task_file}:{method.id} declares {method.search.evaluations} evaluations but the "
@@ -136,5 +140,17 @@ def _searchable_sources(dataset: str) -> tuple[SourceSchema, ...]:
     if dataset == "uscrn":
         return tuple(
             source for source in uscrn.source_schemas() if source.source_id != uscrn.FINAL_SOURCE_ID
+        )
+    if dataset == "enefit":
+        return tuple(
+            source
+            for source in enefit.source_schemas()
+            if source.source_id != enefit.TARGET_SOURCE_ID
+        )
+    if dataset == "beijing":
+        return tuple(
+            source
+            for source in beijing.source_schemas()
+            if source.source_id != beijing.TARGET_SOURCE_ID
         )
     raise AssertionError(f"no declared searchable surface for {dataset!r} in this test")
