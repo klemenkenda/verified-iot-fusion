@@ -10,6 +10,13 @@ Null propagation follows the ``propagate`` policy: a combination of an unknown v
 unknown, not zero. Division by zero yields null for the same reason — the ratio is undefined,
 and returning an infinity would put a value into the feature table that no model can read as
 missing.
+
+``coalesce`` is the one operator here that does not propagate, and it is handled before the
+null check rather than inside it. It **selects** between two computed features, so it reports
+the lineage of the input it actually took and not the union of both: a feature whose lineage
+named records that did not produce its value would make the replay audit of section 5.4 a
+fiction. Selecting is also why it is not imputation — nothing is invented, and the fallback is
+an expression the program declared and the compiler checked.
 """
 
 from __future__ import annotations
@@ -25,7 +32,9 @@ def combine(
     left: FeatureValue,
     right: FeatureValue,
 ) -> FeatureValue:
-    """Apply one arithmetic operator to two computed features."""
+    """Apply one arithmetic or selection operator to two computed features."""
+    if operation == "coalesce":
+        return _coalesce(node_id, left, right)
     if left.value is None or right.value is None:
         return FeatureValue(name=node_id, value=None)
     if isinstance(left.value, str) or isinstance(right.value, str):
@@ -63,4 +72,25 @@ def combine(
         value=value,
         lineage=lineage,
         max_available_time=max(available),
+    )
+
+
+def _coalesce(node_id: str, left: FeatureValue, right: FeatureValue) -> FeatureValue:
+    """The first input that is not null, else the second.
+
+    The returned value carries the lineage and availability of whichever input answered, so
+    a reader of the audit can see *which* expression produced the number. Taking the union
+    would claim the feature depended on records it never read; taking neither would leave a
+    value with no explanation at all.
+    """
+    chosen = left if left.value is not None else right
+    if chosen.value is None:
+        return FeatureValue(name=node_id, value=None)
+    if not chosen.lineage:
+        return FeatureValue(name=node_id, value=chosen.value)
+    return FeatureValue(
+        name=node_id,
+        value=chosen.value,
+        lineage=chosen.lineage,
+        max_available_time=chosen.max_available_time,
     )

@@ -20,6 +20,18 @@ Three constraints from section 5.3 are enforced structurally rather than remembe
 * **State bounds come from lookback and declared arrival rate**, never lookback alone.
 * **Parity tolerance is per operator and declared up front**, so it cannot be widened later
   under schedule pressure.
+
+**Additions, with the failure analysis that earned them** — section 5.3 admits an operator only
+from a documented failure, so each one is named here:
+
+* ``coalesce`` (2026-09-11). A naive seasonal floor is *unwritable* without it on any series
+  with gaps: ``lag`` is exact by construction and returns null wherever the hour it addresses
+  is missing, ``last`` ignores the lag entirely, and there was no third thing to say. Measured
+  on Beijing, the 24-hour lag is null at every one of the twelve stations — 1.3% to 6.3% of
+  validation prediction times — so ``beijing_pm25_24h`` could not score a seasonal naive at
+  all and fell back to persistence, a materially weaker floor. The operator is *not* an
+  imputation: it selects between two declared expressions and reports the lineage of the one
+  it took, so a reader can still see which value answered.
 """
 
 from __future__ import annotations
@@ -34,7 +46,13 @@ from vifusion.temporal.specs import Aggregate
 UnitRule = Literal["preserve", "multiply", "divide", "dimensionless", "seconds", "custom"]
 """How an operator's output unit derives from its inputs (section 5.3)."""
 
-NullPolicy = Literal["reject", "propagate", "impute_constant", "last_value"]
+NullPolicy = Literal[
+    "reject", "propagate", "impute_constant", "last_value", "first_non_null"
+]
+"""How an operator treats a null input.
+
+``first_non_null`` is the only policy that *consumes* a null rather than passing it on,
+and it exists for exactly one operator. See :data:`OPERATORS` under ``coalesce``."""
 
 ParityKind = Literal["exact", "tolerance"]
 """``exact`` where the batch path runs the same accumulator; ``tolerance`` where a
@@ -351,6 +369,18 @@ OPERATORS: dict[str, Operator] = {
             unit_rule="divide",
             time_direction="past_only",
             null_policy="propagate",
+            batch_lowering="exact",
+        ),
+        Operator(
+            name="coalesce",
+            summary="The first input that is not null, else the second; null if both are.",
+            arity=2,
+            reads_source=False,
+            input_types=("number", "number"),
+            output_type="number",
+            unit_rule="preserve",
+            time_direction="past_only",
+            null_policy="first_non_null",
             batch_lowering="exact",
         ),
     )

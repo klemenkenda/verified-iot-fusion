@@ -40,8 +40,9 @@ options:
   first_release: "2021-08-31T11:00:00+03:00"
   # Only the files these programs read. The two weather files are the expensive ones and the
   # forecast half is not read by any method here, so naming the sources keeps the read to
-  # what the task needs rather than the whole competition.
-  sources: enefit_target,enefit_client,enefit_electricity,enefit_weather_actual
+  # what the task needs rather than the whole competition. `enefit_electricity` left this list
+  # on 2026-09-11 with the price feature that was its only reader.
+  sources: enefit_target,enefit_client,enefit_weather_actual
   # The same unit named below, given to the *adapter* rather than only to the runner: this
   # narrows the read itself, and with it the weather grid points, to the six stations this
   # unit's county contains instead of all 112.
@@ -78,15 +79,15 @@ methods:
   - id: M1
     program: configs/programs/enefit_m1_raw_calendar.yaml
     description: >-
-      Raw current values of the same four sources M2 engineers, plus calendar features.
+      Raw current values of the same three sources M2 engineers, plus calendar features.
       Separates the value of a fitted model from the value of engineered features.
 
   - id: M2
     program: configs/programs/enefit_consumption.yaml
     description: >-
       Expert-engineered features: windowed consumption statistics, staleness, the county's
-      averaged weather through the declared entity graph, a day-ahead price, and consumption
-      normalised by contracted capacity. The human bar H1 must clear.
+      averaged weather through the declared entity graph, and consumption normalised by
+      contracted capacity. The human bar H1 must clear.
 
 rationale: >-
   A result that says "every method scores at or below zero" is worth reporting only if it is

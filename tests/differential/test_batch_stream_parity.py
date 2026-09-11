@@ -125,6 +125,11 @@ PROGRAM: dict[str, Any] = {
             "op": "day_after_holiday",
             "params": {"timezone": "Europe/Ljubljana", "calendar": "si"},
         },
+        # Selection rather than arithmetic, and the pair is chosen so the fallback actually
+        # fires: `t_fresh` is bounded by a two-hour staleness and goes null whenever the
+        # stream is quiet, while `t_last` does not. Both paths must agree on *which* input
+        # answered, which the lineage comparison below checks exactly.
+        {"id": "t_or_last", "op": "coalesce", "inputs": ["t_fresh", "t_last"]},
         {"id": "spread", "op": "subtract", "inputs": ["hi", "lo"]},
         {"id": "bias", "op": "subtract", "inputs": ["fc", "t_last"]},
         {"id": "ratio", "op": "divide", "inputs": ["spread", "avg"]},
@@ -154,6 +159,7 @@ PROGRAM: dict[str, Any] = {
         "hi",
         "fc",
         "nbr_avg",
+        "t_or_last",
         "spread",
         "bias",
         "ratio",

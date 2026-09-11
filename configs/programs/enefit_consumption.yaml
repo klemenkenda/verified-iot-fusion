@@ -1,8 +1,8 @@
 # A hand-written feature program for one Enefit prediction unit.
 #
 # The heterogeneous fusion of section 8.1 in miniature: the unit's own consumption history, a
-# measured weather stream belonging to other entities, a forward-looking price stream, a static
-# contract fact, and date/time features, combined into one vector for one prosumer.
+# measured weather stream belonging to other entities, a static contract fact, and date/time
+# features, combined into one vector for one prosumer.
 #
 # **The consumption history is read from the label source, and that is not a leak.** Consumption
 # exists in this dataset only as `enefit_target` — there is no measured stream carrying it — so
@@ -20,11 +20,13 @@
 # unit owned it; that compiled cleanly and returned null for every weather feature, which is
 # why the edge is declared here and named by the node rather than left implicit.
 #
-# The price operator reads *forward-looking* records: a day-ahead price describes an instant
-# that has not happened, selected by the issue that was actually eligible at the prediction
-# time. That selection is the point of the whole exercise — an implementation that grouped by
-# valid time and took the last issue would leak, and would look exactly like this while doing
-# it.
+# **There is no forward-looking source left in this program, and that is a loss worth naming.**
+# The price node was removed on 2026-09-11 as a feature null in every row — see the comment at
+# its former position for the measurement. Forecast *selection by issue* is the single most
+# distinctive thing this framework does, and with the price gone the only remaining candidate
+# on this dataset is the archived weather forecast, which `cross_entity_mean` still refuses.
+# So Enefit currently demonstrates three availability shapes rather than four, and the section
+# 8.1 claim should be read at that strength until one of the two is restored.
 #
 # **What is missing, and why it is missing rather than approximated.** The original program
 # also carried a 24-hour weather mean, a weather staleness, and a weather forecast. Each needs
@@ -52,15 +54,6 @@ sources:
     unit: degC
     max_input_rate_per_hour: 4
     description: Measured weather at a grid point.
-
-  - source_id: enefit_electricity
-    feature_name: euros_per_mwh
-    kind: forecast
-    value_type: number
-    unit: euro / megawatt_hour
-    max_input_rate_per_hour: 4
-    max_forecast_horizon: 48h
-    description: Day-ahead electricity price for the hour it names.
 
   - source_id: enefit_client
     feature_name: installed_capacity
@@ -121,11 +114,18 @@ nodes:
       feature: temperature
       entity_ref: weather_stations
 
-  # The latest issue eligible now, for the hour being predicted rather than the next one: a
-  # day-ahead task wants the price of the target's own hour.
-  - id: price_fc_24h
-    op: forecast
-    params: {source: enefit_electricity, feature: euros_per_mwh, lead: 24h}
+  # **No price feature, and the reason is measured rather than assumed.** Both programs
+  # carried `price_fc_24h` — the electricity price for the hour being predicted — until
+  # 2026-09-11, when a run refused it as a feature null in every row of every fold. Under the
+  # declared block schedule a day's prices arrive at 11:00 local on the day they apply, so the
+  # furthest ahead this stream reaches is the end of that same day. Measured over the 1,248
+  # validation prediction times, a forward price resolves at 54.2% of them at a one-hour lead,
+  # 33.3% at six hours, 8.3% at twelve, and **0% at eighteen hours or beyond**. A day-ahead
+  # task cannot know the price of the hour it predicts, and the node claiming otherwise was
+  # contributing nothing while inflating the feature count. Reinstating it at a lead the
+  # stream can actually reach would add a genuinely forward-looking source back to this
+  # program at roughly half coverage; that is a change to the expert baseline and belongs
+  # with that decision, not with a defect repair. See docs/decision_log.md, 2026-09-11.
 
   - id: capacity
     op: last
@@ -162,7 +162,6 @@ outputs:
   - consumption_sd_7d
   - consumption_age
   - county_temp
-  - price_fc_24h
   - capacity
   - load_factor
   - consumption_trend

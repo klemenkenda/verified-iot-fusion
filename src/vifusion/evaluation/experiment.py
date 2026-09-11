@@ -140,6 +140,13 @@ class MethodResult:
     """The discovered program, for a searching method. Written beside the results so that a
     reviewer can read what the search actually chose rather than trusting a hash."""
 
+    null_rates: dict[str, float] = field(default_factory=dict)
+    """Fraction of *fitted* rows on which each declared feature was null.
+
+    Reported rather than merely checked, because the interesting cases are not only the
+    all-null ones a run refuses: a feature null on 90% of rows is contributing almost
+    nothing and is invisible in a results table that shows a feature count."""
+
     @property
     def selected_in_sample(self) -> bool:
         """True when this method made a data-driven choice on the fold it is scored on.
@@ -169,6 +176,7 @@ class MethodResult:
             "tuned_on": self.tuned_on,
             "scores": self.scores.as_dict(),
             "search": None if self.search is None else self.search.as_dict(),
+            "null_rates": dict(self.null_rates),
         }
 
 
@@ -316,6 +324,8 @@ def run_method(
         raise TaskError(f"method {method.id}: the {fold} fold produced no scored examples")
 
     names = usable[0].feature_names
+    null_rates = _null_rates(names, usable)
+    _refuse_features_that_never_resolve(method, predictor_name, plan, names, usable, scoring)
     chosen_penalty: float | None = None
     settings: dict[str, Any] | None = None
     tuned_on = ""
@@ -359,12 +369,93 @@ def run_method(
         tuned_on=tuned_on,
         search=report,
         program=program,
+        null_rates=null_rates,
         scores=metrics.score(
             [example.target_value for example in scoring],
             list(predicted),
             groups=[example.entity_id for example in scoring],
             scales=scales,
         ),
+    )
+
+
+def _null_rates(
+    names: Sequence[str], examples: Sequence[Example]
+) -> dict[str, float]:
+    """How often each declared feature was null across ``examples``."""
+    if not examples:
+        return {}
+    total = len(examples)
+    return {
+        name: sum(1 for item in examples if item.features[index] is None) / total
+        for index, name in enumerate(names)
+    }
+
+
+def _refuse_features_that_never_resolve(
+    method: MethodSpec,
+    predictor_name: str,
+    plan: ExecutionPlan,
+    names: Sequence[str],
+    fitting: Sequence[Example],
+    scoring: Sequence[Example],
+) -> None:
+    """Refuse a program that declares a feature which is null in every row.
+
+    **Found the hard way, 2026-09-11.** `price_fc_24h` asked the Enefit electricity stream for
+    a price 24 hours ahead; that stream's reachable lead is at most 13 hours, so the feature
+    was null in every row of every fold. Two published programs carried it, M2 fitted on
+    thirteen features while reporting fourteen, and nothing objected — the dead column simply
+    contributed nothing and the results table counted it anyway.
+
+    A run refuses rather than warns because there is no reading under which this is intended.
+    A feature that never resolves is either a program defect or a claim about a stream that
+    the data contradicts, and both are worth stopping for. It also matters more once features
+    are proposed rather than written: section 7.2's acceptance tests stop a proposal that
+    cannot execute, and a proposal that executes to nothing at all is the quieter failure —
+    it costs a candidate evaluation and looks like a feature that simply did not help.
+
+    Both sets are required to be dead before refusing. A feature null throughout training but
+    present when scoring is a different fault — the model could not learn from it — and it is
+    visible in ``null_rates`` without stopping the run.
+    """
+    dead = [
+        name
+        for index, name in enumerate(names)
+        if all(item.features[index] is None for item in fitting)
+        and all(item.features[index] is None for item in scoring)
+    ]
+    if not dead:
+        return
+
+    # Distinguish the two causes, because they call for opposite repairs. A categorical
+    # feature is not a defect in the program at all: `build_examples` discards every string
+    # before a predictor sees it, so the DSL accepts a category the evaluation layer cannot
+    # consume. Blaming the program for that would send an author to fix the wrong file.
+    categorical = [
+        name
+        for name in dead
+        if name in plan.nodes and plan.nodes[name].value_type == "category"
+    ]
+    if categorical:
+        raise TaskError(
+            f"method {method.id} under {predictor_name!r} declares categorical "
+            f"{'feature' if len(categorical) == 1 else 'features'} {', '.join(categorical)}, "
+            "which no predictor here can consume: `build_examples` replaces every category "
+            "with null before fitting, so the column is empty in all "
+            f"{len(fitting)} fitted rows and all {len(scoring)} scored rows. This is a gap in "
+            "the evaluation layer rather than an error in the program — the compiler accepts "
+            "categories and the runtime computes them. Until an encoding is chosen and frozen, "
+            "a program scored through this path must output numbers only."
+        )
+    raise TaskError(
+        f"method {method.id} under {predictor_name!r} declares "
+        f"{'a feature that never resolves' if len(dead) == 1 else 'features that never resolve'}: "
+        f"{', '.join(dead)} "
+        f"— null in all {len(fitting)} fitted rows and all {len(scoring)} scored rows. "
+        "A declared feature that is always null is a defect in the program or a claim the "
+        "data contradicts; it cannot inform a model and it overstates the feature count. "
+        "Remove it, or change what it reads."
     )
 
 

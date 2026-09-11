@@ -68,6 +68,7 @@ BATCH_LOWERINGS = frozenset(
         "subtract",
         "multiply",
         "divide",
+        "coalesce",
         "hour_of_day",
         "day_of_week",
         "day_of_month",

@@ -45,13 +45,6 @@ sources:
     max_input_rate_per_hour: 2
     description: Wind speed.
 
-  - source_id: beijing_air
-    feature_name: wd
-    kind: measurement
-    value_type: category
-    max_input_rate_per_hour: 2
-    description: Wind direction, as a compass label.
-
 nodes:
   - id: pm25_now
     op: last
@@ -62,9 +55,13 @@ nodes:
   - id: wind_now
     op: last
     params: {source: beijing_air, feature: wspm}
-  - id: wind_direction
-    op: last
-    params: {source: beijing_air, feature: wd}
+  # **No wind-direction feature, and the cause is the evaluation layer rather than this
+  # program.** Both Beijing programs carried `wind_direction` -- `last` over the `wd` compass
+  # label -- until 2026-09-11, when a run refused it as null in every row. The records are
+  # there and the runtime computes the feature correctly; `build_examples` then replaces every
+  # string with null before fitting, so no predictor ever saw it. Categorical features are
+  # accepted by the compiler and discarded by the scorer, which is a gap worth closing with a
+  # frozen encoding rather than papered over here. See docs/decision_log.md, 2026-09-11.
 
   # Asia/Shanghai, not UTC: the dataset's hour columns are local, and a daily pollution cycle
   # written against the wrong zone is an eight-hour phase error in every calendar feature.
@@ -82,7 +79,6 @@ outputs:
   - pm25_now
   - temp_now
   - wind_now
-  - wind_direction
   - hour
   - day_of_year
   - weekend

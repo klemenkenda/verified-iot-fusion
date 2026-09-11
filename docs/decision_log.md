@@ -1695,3 +1695,159 @@ M2/lightgbm         4123   0.0675    39.8276    52.5709    3.651     8.2874
   floor's -0.50 shows how little persistence carries at that horizon.
 - **Made before or after viewing test results:** after; this entry records them.
 - **Phase / gate:** Phase 6, Gate B.
+
+### 2026-09-11 — `coalesce` enters the operator registry, from a named failure
+
+- **Decision:** a `coalesce` operator — the first input that is not null, else the second —
+  joins the registry. Arity two, `preserve` units, and a new `first_non_null` null policy that
+  belongs to it alone. A three-way fallback is written as two nodes.
+- **The failure that earned it.** Section 5.3 admits an operator only from documented failure
+  analysis. A seasonal naive floor is *unwritable* on any series with gaps: `lag` is exact by
+  construction and returns null wherever the hour it addresses is missing, `last` ignores the
+  lag entirely, and there was no third thing to say. Measured on Beijing, the 24-hour lag is
+  null at every one of the twelve stations, so `beijing_pm25_24h` could not score a seasonal
+  floor at all.
+- **Selection, not imputation, and the lineage rule is what makes that true.** The result
+  carries the lineage and `max_available_time` of *whichever input answered*, never the union.
+  A union would claim the feature depended on records that did not produce its value and would
+  make the section 5.4 replay audit a fiction. Both branches are declared expressions the
+  compiler has already checked, so nothing is invented — which is the difference between this
+  and filling a gap with a constant.
+- **Coverage came from the guards rather than from diligence.** Two existing tests refused to
+  pass until the new operator was exercised: the parity program's
+  `test_every_operator_in_the_program_is_exercised` and the unit property's
+  `test_every_registered_operator_is_covered_by_one_of_the_properties`. So `coalesce` acquired
+  property-based batch/stream parity and a unit-compatibility property before it acquired any
+  hand-written test. Those guards were worth having.
+- **Regression tests:** `tests/unit/test_coalesce.py` (13 cases, including that a zero does not
+  fall through, that lineage is the chosen input alone, and that arithmetic still propagates
+  null), plus the two property suites above.
+- **Phase / gate:** Phase 6; an input to the Gate C registry freeze.
+
+### 2026-09-11 — A run refuses a declared feature that never resolves
+
+- **Decision:** before anything is fitted, every declared feature is checked against the rows
+  it will be fitted and scored on. A feature null in *all* of both raises `TaskError`. Null
+  rates for every feature are recorded on `MethodResult.null_rates` and written to
+  `scores.json` whether or not anything is refused.
+- **Why refuse rather than warn:** there is no reading under which an always-null feature is
+  intended. It is either a defect in the program or a claim about a stream the data
+  contradicts, and both are worth stopping for. It also costs nothing to notice and is nearly
+  invisible otherwise — a constant column changes no metric, so the only symptom is a feature
+  count that is too high.
+- **Why null rates are reported anyway:** the all-null case is the one a run can refuse, but a
+  feature null on 90% of rows contributes almost nothing and is equally invisible in a table
+  that shows only a count.
+- **Both sets must be dead.** A feature null throughout training but present when scoring is a
+  different fault — the model could not learn from it — and it is visible in `null_rates`
+  without stopping the run.
+- **It found two defects within minutes of existing**, neither of which any test had caught:
+  `price_fc_24h` on Enefit and `wind_direction` on Beijing. Both have their own entries below.
+- **Why it matters more in Phase 7 than now:** section 7.2's acceptance tests stop a proposal
+  that *cannot* execute. A proposal that executes to nothing at all is the quieter failure — it
+  consumes a candidate evaluation and is indistinguishable, in the results, from a feature that
+  simply did not help.
+- **Phase / gate:** Phase 6; a prerequisite for the Phase 7 proposal loop.
+
+### 2026-09-11 — The Enefit price feature is removed: no forward price exists at a day-ahead lead
+
+- **Decision:** `price_fc_24h` is removed from `enefit_consumption.yaml` (M2) and
+  `enefit_m1_raw_calendar.yaml` (M1), and `enefit_electricity` leaves both task configs' source
+  lists with it.
+- **The measurement.** Under the declared block schedule a day's prices arrive at 11:00 local on
+  the day they apply, so the stream reaches no further than the end of that same day. Over the
+  1,248 validation prediction times a forward price resolves at **54.2%** of them at a one-hour
+  lead, 45.8% at three hours, 33.3% at six, 8.3% at twelve, and **0% at eighteen hours or
+  beyond**. Resolution is confined to prediction times between 10:00 and 22:00 local; between
+  23:00 and 10:00 the newest available block describes only hours already past.
+- **So a day-ahead task cannot know the price of the hour it predicts.** The node claiming
+  otherwise was null in every row of every fold and had been since the task was written.
+- **The scores are unchanged to four decimal places**, which confirms that a constant column
+  contributes nothing to either predictor: the same run after removal reports M0 0.5765,
+  M1/ridge 0.1635, M1/lightgbm 0.0125, M2/ridge 0.6172, M2/lightgbm 0.3468 — identical. What
+  changes is the honest feature count: M2 fits on 13 where it reported 14, M1 on 6 where it
+  reported 7.
+- **The loss worth naming.** Forecast *selection by issue* is the most distinctive thing this
+  framework does, and the price was Enefit's only forward-looking source — the archived weather
+  forecast is still refused by `cross_entity_mean`. Enefit now demonstrates three availability
+  shapes rather than four, and the section 8.1 claim should be read at that strength until one
+  of the two is restored. Reinstating the price at a lead the stream can reach, at roughly half
+  coverage, is a change to the expert baseline and belongs with that decision.
+- **Phase / gate:** Phase 6.
+
+### 2026-09-11 — Categorical features are accepted by the compiler and discarded by the scorer
+
+- **The defect:** `build_examples` in `evaluation/tasks.py` replaces every string value with
+  null before fitting. The DSL declares a `category` value type, `last` over a categorical
+  source returns a compass label correctly, the compiler type-checks it, the runtime computes
+  it — and then the evaluation layer drops it silently. Any program declaring a categorical
+  feature gets a column of nulls and a feature count that is too high.
+- **How it surfaced:** the always-null check refused `wind_direction` on Beijing, which both
+  `beijing_pm25.yaml` (M2, written before today) and the new M1 carried. The records are
+  present — 35,064 of them at Aotizhongxin, with values like `NNW`.
+- **The refusal now names the cause rather than the symptom.** An always-null feature whose
+  compiled node type is `category` reports that no predictor here can consume it and that the
+  gap is in the evaluation layer, not the program. Blaming the program would send an author to
+  fix the wrong file.
+- **Interim:** `wind_direction` is removed from both Beijing programs, which lose a genuinely
+  informative variable — wind direction governs whether Beijing's air arrives from the
+  industrial south or the northern mountains.
+- **Not fixed, and deliberately.** An encoding is a protocol decision: which scheme, how unseen
+  categories at scoring time are handled, and whether the choice is frozen per dataset. It
+  affects H1's comparison and belongs with the Gate C freeze, not with a defect repair.
+- **Phase / gate:** Phase 6; a Gate C input.
+
+### 2026-09-11 — Beijing reports two floors, because the stronger one was not the expected one
+
+- **Decision:** `beijing_pm25_24h` scores both `M0` (persistence) and `M0s` (the seasonal naive
+  with a persistence fallback, via the new `coalesce`). M0 is the floor the fitted methods must
+  clear; M0s is reported beside it.
+- **Why both:** on USCRN and Enefit the seasonal naive is the stronger floor, and particulates
+  have a daily cycle, so the expectation was that it would be stronger here too. Measured, it is
+  not — persistence reaches MAE 45.62 and R-squared -0.4954 against the seasonal branch's 52.02
+  and -0.7532. PM2.5 at a 24-hour horizon owes less to the time of day than temperature or
+  household consumption do.
+- **What the assumption would have cost:** adopting the seasonal floor on the strength of the
+  other two datasets would have understated the floor by more than five MAE and flattered every
+  fitted method above it by that much. A floor is only useful if it is the *strongest* trivial
+  baseline, so which one that is has to be measured per dataset rather than inherited.
+- **Made before or after viewing test results:** after — and the correction runs against the
+  direction that would have looked better, which is the reason for recording it.
+- **Phase / gate:** Phase 6, Gate B.
+
+### 2026-09-11 — M2 versus M1, repeated after the repairs: two of three datasets unchanged
+
+- **What was rerun:** all three Gate B tasks, after `coalesce`, the always-null refusal, and the
+  removal of the two dead features. Run ids `20260911T093738Z-13239cee` (Enefit unit 65),
+  `20260911T094533Z-0f4bd543` (Enefit unit 0, growth companion) and
+  `20260911T094837Z-e9cb2bcc` (Beijing). M1 and M2 figures remain in-sample.
+
+```
+                            R2       MAE  |                      R2       MAE
+USCRN   M1/ridge        0.8350    1.5769  | Enefit  M1/ridge   0.1635   33.9893
+        M1/lightgbm     0.9056    1.2121  | unit65  M1/lgbm    0.0125   37.8520
+        M2/ridge        0.8477    1.4917  |         M2/ridge   0.6172   20.4822
+        M2/lightgbm     0.9030    1.2290  |         M2/lgbm    0.3468   30.0925
+
+Beijing M1/ridge        0.0544   40.1230  | Enefit  M1/ridge  -0.3424  155.4665
+        M1/lightgbm     0.1056   39.1427  | unit 0  M1/lgbm   -0.6247  179.8010
+        M2/ridge        0.0541   40.1292  |         M2/ridge   0.0457  124.5534
+        M2/lightgbm     0.0675   39.8276  |         M2/lgbm   -0.2150  148.3575
+```
+
+- **The conclusion does not move.** M2 clears M1 decisively on Enefit under both predictors and
+  on both units; on USCRN it wins under ridge and loses under LightGBM; on Beijing it is level
+  under ridge (0.0541 against 0.0544) and behind under LightGBM. Two of three datasets show no
+  separation, and the repairs changed none of it.
+- **What the repairs did change is confidence in the comparison, which was the point.** Before
+  them, three of the four programs involved carried a feature that was null in every row —
+  Enefit's M1 and M2 the price, Beijing's M2 the wind direction — and the reported feature
+  counts were wrong on every Enefit and Beijing line. The numbers were right by accident,
+  because a constant column contributes nothing; they are now right on purpose.
+- **The open question is unchanged and is Gate B's main one:** section 9.1 casts M2 as the human
+  bar H1 must clear, and a bar level with raw-values-plus-calendar on two of three datasets
+  makes clearing it mean little. Both remaining explanations survive — either these tasks are
+  ones where feature engineering cannot matter much, or both expert programs are thin. The
+  Beijing program reads one pollutant where the station reports four, and the Enefit program has
+  lost its only forward-looking source; both point at the second explanation.
+- **Phase / gate:** Phase 6, Gate B.

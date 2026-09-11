@@ -36,13 +36,6 @@ sources:
     max_input_rate_per_hour: 2
     description: Wind speed.
 
-  - source_id: beijing_air
-    feature_name: wd
-    kind: measurement
-    value_type: category
-    max_input_rate_per_hour: 2
-    description: Wind direction, as a compass label.
-
 nodes:
   - id: pm25_now
     op: last
@@ -71,11 +64,13 @@ nodes:
   - id: wind_now
     op: last
     params: {source: beijing_air, feature: wspm}
-  # A categorical last-value: the operator's output type follows its source, so this returns
-  # a compass label rather than a number, and no aggregate may be taken of it.
-  - id: wind_direction
-    op: last
-    params: {source: beijing_air, feature: wd}
+  # **No wind-direction feature, and the cause is the evaluation layer rather than this
+  # program.** Both Beijing programs carried `wind_direction` -- `last` over the `wd` compass
+  # label -- until 2026-09-11, when a run refused it as null in every row. The records are
+  # there and the runtime computes the feature correctly; `build_examples` then replaces every
+  # string with null before fitting, so no predictor ever saw it. Categorical features are
+  # accepted by the compiler and discarded by the scorer, which is a gap worth closing with a
+  # frozen encoding rather than papered over here. See docs/decision_log.md, 2026-09-11.
 
   - id: pm25_anomaly
     op: subtract
@@ -97,7 +92,6 @@ outputs:
   - pm25_gaps_24h
   - temp_now
   - wind_now
-  - wind_direction
   - pm25_anomaly
   - hour
   - weekend

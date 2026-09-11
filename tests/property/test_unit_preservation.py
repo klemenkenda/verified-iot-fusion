@@ -187,7 +187,7 @@ def test_calendar_operators_are_dimensionless_whatever_the_sources_carry(op: str
 
 
 @given(
-    op=st.sampled_from(["add", "subtract", "multiply", "divide"]),
+    op=st.sampled_from(["add", "subtract", "multiply", "divide", "coalesce"]),
     left=SOURCE_UNITS,
     right=SOURCE_UNITS,
 )
@@ -196,6 +196,11 @@ def test_arithmetic_combines_units_or_refuses_to(
     op: str, left: str | None, right: str | None
 ) -> None:
     """Addition-like operators preserve; product-like operators combine; neither invents.
+
+    ``coalesce`` is grouped with the addition-like ones, and the grouping is the claim: a
+    fallback returns one branch or the other unchanged, so the two branches must be the same
+    quantity. Falling back from a temperature to a wind speed would put two different physical
+    things in one column, which is exactly the error this property exists to catch.
 
     The rejection half is the load-bearing one. An addition of kelvin to metres that
     compiled would produce a number with no meaning, and nothing downstream — not the
@@ -215,7 +220,7 @@ def test_arithmetic_combines_units_or_refuses_to(
     result = _compile(program)
 
     compatible = _dimensionality(left) == _dimensionality(right)
-    if op in ("add", "subtract") and not compatible:
+    if op in ("add", "subtract", "coalesce") and not compatible:
         assert not result.accepted, f"{left!r} {op} {right!r} must not compile"
         assert Code.UNIT_INCOMPATIBLE in {diagnostic.code for diagnostic in result.diagnostics}, [
             str(diagnostic) for diagnostic in result.diagnostics
@@ -225,7 +230,7 @@ def test_arithmetic_combines_units_or_refuses_to(
     assert result.accepted, [str(diagnostic) for diagnostic in result.diagnostics]
     assert result.plan is not None
     assigned = result.plan.nodes["node"].unit
-    if op in ("add", "subtract"):
+    if op in ("add", "subtract", "coalesce"):
         expected = _dimensionality(left)
     elif op == "multiply":
         expected = _dimensionality(left) * _dimensionality(right)
@@ -236,7 +241,11 @@ def test_arithmetic_combines_units_or_refuses_to(
 
 def test_every_registered_operator_is_covered_by_one_of_the_properties() -> None:
     """Guards the property against an operator added to the registry and never generated."""
-    covered = set(LEAF_PARAMS) | set(CALENDAR_OPS) | {"add", "subtract", "multiply", "divide"}
+    covered = (
+        set(LEAF_PARAMS)
+        | set(CALENDAR_OPS)
+        | {"add", "subtract", "multiply", "divide", "coalesce"}
+    )
     assert covered == set(registry.names()), (
         f"operators with no unit property: {set(registry.names()) - covered}"
     )

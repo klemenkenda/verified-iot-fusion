@@ -53,15 +53,28 @@ methods:
     output: persistence
     description: >-
       Forecasting floor: the most recent PM2.5 this station delivered, returned unchanged.
-      **Persistence rather than the seasonal naive, and the reason is a property of the
-      dataset rather than a preference.** A daily cycle would make the twenty-four-hour lag
-      the better floor, and the program emits it -- but this dataset has real gaps, and an
-      exact lag is undefined wherever the hour it addresses is missing. Measured over the
-      4,248 validation prediction times, the 24-hour lag is null at every one of the twelve
-      stations: 54 times at the best (Wanliu, 1.3%) and 269 at the worst (Dongsi, 6.3%). The
-      floor refuses to skip an instance -- a baseline that declines the hard ones is a filter,
-      not a floor -- so a seasonal naive cannot be scored here at all. `last` is defined
-      whenever the station has ever reported. `seasonal` stays in the program as a diagnostic.
+
+  - id: M0s
+    program: configs/programs/beijing_m0_naive.yaml
+    predictor: identity
+    output: seasonal_or_last
+    description: >-
+      The seasonal naive -- the reading twenty-four hours before the prediction time -- with
+      persistence as its fallback where that hour is missing.
+
+      **Both floors are reported because which one is stronger is a question, not an
+      assumption.** On USCRN and Enefit the seasonal naive is the better floor, and the daily
+      cycle in particulates suggested it would be here too. Measured, it is not: persistence
+      scores MAE 45.6 against the seasonal 52.0, so PM2.5 at this horizon is governed more by
+      what the air is doing now than by the time of day. M0 is therefore the stronger floor
+      and the one every fitted method must clear; M0s is kept beside it because a floor
+      chosen without measuring would have flattered the methods above it by five MAE.
+
+      This comparison could not be made before 2026-09-11. An exact 24-hour lag is null at
+      every one of the twelve stations -- 54 to 269 of the 4,248 validation prediction times
+      -- and a floor that declines those instances is a filter rather than a floor, so the
+      run refused it. The `coalesce` operator added that day is what makes the seasonal
+      branch expressible, and this is its first use.
 
   - id: M1
     program: configs/programs/beijing_m1_raw_calendar.yaml
