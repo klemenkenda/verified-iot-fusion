@@ -2107,3 +2107,258 @@ M3f fastener                0.0915    34.258         10
   forward selection needs at most ~612 evaluations, not 2,500 — so the projection is the
   conservative direction.
 - **Phase / gate:** Phase 6.
+
+---
+
+### 2026-09-12 — The Gate B grid, complete: M3 clears M2 on USCRN and Beijing, and structurally cannot reach it on Enefit
+
+- **What was run:** the full declared Gate B grid, validation fold, one process per task, on a
+  Xeon workstation. Run ids `20260911T211550Z-cc6ee84d` (USCRN),
+  `20260911T170522Z-f0150bcb` (Enefit unit 65), `20260911T172723Z-c14d71eb` (Enefit unit 0) and
+  `20260912T043524Z-7ff2a36c` (Beijing). 87,000 budgeted evaluations across 53 cells. Every
+  figure below is **in-sample on validation** for M1, M2, M3, M3r, M3f and the ablation arms —
+  features were selected on the fold they are scored on. The comparison that decides H1 is a
+  test-fold comparison after the Gate C freeze.
+
+```text
+uscrn_temperature_1h_archive — validation, station 94075, 23,197 train / 2,039 scored
+method                 n       R2        MAE       RMSE     MASE       bias
+M0/identity         2039   0.7174     2.1197     2.9247    2.293    -0.0050
+M1/ridge            2039   0.8350     1.5769     2.2350    1.706    -0.1874
+M1/lightgbm         2039   0.9056     1.2121     1.6906    1.311    -0.0026
+M2/ridge            2039   0.8477     1.4917     2.1472    1.614    -0.1596
+M2/lightgbm         2039   0.9030     1.2290     1.7131    1.330    -0.1267
+M3/ridge            2039   0.8623     1.4190     2.0418    1.535    -0.0785
+M3/lightgbm         2039   0.9054     1.2082     1.6918    1.307    -0.1077
+M3r/ridge           2039   0.8545     1.4831     2.0982    1.605    -0.1583
+M3r/lightgbm        2039   0.9015     1.2549     1.7268    1.358    -0.1574
+M3f/ridge           2039   0.8601     1.4302     2.0580    1.547    -0.1420
+M3f/lightgbm        2039   0.9063     1.2143     1.6838    1.314    -0.1185
+
+beijing_pm25_24h — validation, Aotizhongxin, 25,533 train / 4,123 scored
+method                 n       R2        MAE       RMSE     MASE       bias
+M0/identity         4123  -0.4954    45.6192    66.5740    4.182     2.1586
+M0s/identity        4123  -0.7532    52.0150    72.0840    4.768     0.7242
+M1/ridge            4123   0.0544    40.1230    52.9389    3.678     6.6188
+M1/lightgbm         4123   0.1056    39.1427    51.4873    3.588     9.3080
+M2/ridge            4123   0.0541    40.1292    52.9481    3.679     6.5662
+M2/lightgbm         4123   0.0675    39.8276    52.5709    3.651     8.2874
+M3/ridge            4123   0.1238    36.3890    50.9609    3.336    -2.9038
+M3/lightgbm         4123   0.2052    35.8396    48.5346    3.285     0.1351
+M3r/ridge           4123   0.0953    37.0569    51.7816    3.397    -2.4600
+M3r/lightgbm        4123   0.1238    36.9200    50.9598    3.385    -2.0205
+M3f/ridge           4123   0.1136    36.8354    51.2569    3.377    -3.0668
+M3f/lightgbm        4123   0.1425    36.2486    50.4127    3.323    -1.0592
+
+enefit_consumption_day_ahead — validation, unit 65 (stationary), 8,734 train / 1,248 scored
+method                 n       R2        MAE       RMSE     MASE       bias
+M0/identity         1248   0.5765    14.6796    27.8549    2.744    -3.4598
+M1/ridge            1248   0.1635    33.9893    39.1483    6.354     4.4159
+M1/lightgbm         1248   0.0125    37.8520    42.5346    7.076     4.9366
+M2/ridge            1248   0.6172    20.4822    26.4841    3.829     2.6985
+M2/lightgbm         1248   0.3468    30.0925    34.5936    5.626    -0.8454
+M1+lf/ridge         1248   0.1507    34.2271    39.4466    6.399     4.9582
+M1+lf/lightgbm      1248   0.0328    37.3977    42.0947    6.991     4.9264
+M2-lf/ridge         1248   0.6189    20.3622    26.4225    3.807     2.5157
+M2-lf/lightgbm      1248   0.3163    30.9781    35.3910    5.791    -0.7428
+M3/ridge            1248   0.0961    34.1829    40.6933    6.390    12.1240
+M3/lightgbm         1248   0.1613    33.7004    39.1978    6.300     7.6042
+M3r/ridge           1248   0.0961    34.1829    40.6933    6.390    12.1240
+M3r/lightgbm        1248   0.1848    32.8411    38.6464    6.140     8.8783
+M3f/ridge           1248   0.0961    34.1829    40.6933    6.390    12.1240
+M3f/lightgbm        1248   0.1428    33.6376    39.6278    6.289     7.9370
+
+enefit_consumption_day_ahead_growth — validation, unit 0 (growing, ratio 2.34)
+method                 n       R2        MAE       RMSE     MASE       bias
+M0/identity         1248  -0.3725   147.7554   191.2291    5.405    25.6309
+M1/ridge            1248  -0.3424   155.4665   189.1249    5.687   -70.5871
+M1/lightgbm         1248  -0.6247   179.8010   208.0609    6.577  -163.6348
+M2/ridge            1248   0.0457   124.5534   159.4567    4.556     6.1189
+M2/lightgbm         1248  -0.2150   148.3575   179.9244    5.427  -116.8936
+M1+lf/ridge         1248  -0.2695   150.0663   183.9152    5.489   -56.8066
+M1+lf/lightgbm      1248  -0.3162   158.5641   187.2693    5.800  -140.4173
+M2-lf/ridge         1248   0.0329   126.3716   160.5222    4.623    -4.1152
+M2-lf/lightgbm      1248  -0.2827   153.3035   184.8713    5.608  -121.8514
+M3/ridge            1248  -0.0852   137.5151   170.0452    5.030   -94.4463
+M3/lightgbm         1248  -3.4787   313.6136   345.4427   11.472  -302.8582
+M3r/ridge           1248  -0.1095   138.7608   171.9317    5.076   -97.0425
+M3r/lightgbm        1248  -3.3763   313.0464   341.4720   11.451  -311.1474
+M3f/ridge           1248  -0.0585   130.9516   167.9338    4.790   -69.9036
+M3f/lightgbm        1248  -3.4787   313.6136   345.4427   11.472  -302.8582
+```
+
+- **The prediction of 2026-09-11 is not confirmed, and the reason invalidates the test rather
+  than answering it.** That entry predicted M3 should match or beat M2 *on Enefit*, because
+  everything M2 carries there is within-stream and therefore reachable by enumeration. M3/ridge
+  reaches 0.0961 against M2/ridge's 0.6172 — nowhere near. But the premise was wrong: those
+  features are within-stream, and the stream is the **target** stream.
+  `DatasetBundle.searchable_sources` removes label sources from the search surface, and on
+  Enefit consumption exists *only* as `enefit_target`, so seven of M2's thirteen features —
+  `consumption_now`, the 48-hour lag, the 24-hour and 7-day means, the 7-day standard
+  deviation, staleness and the trend — are not merely unfound but **unreachable**. The recorded
+  search space confirms it: the only streams in it are `enefit_client.eic_count` and
+  `enefit_weather_actual.temperature`. The comparison as run measures the exclusion rule, not
+  search quality.
+- **The rule is inconsistent across datasets, which is what makes this a protocol problem
+  rather than an Enefit quirk.** On USCRN and Beijing the target *quantity* is also published on
+  an ordinary measurement source (`uscrn_update`, `beijing_measurement`), so a search reaches
+  autoregressive features there freely. Whether M3 may use its own target's history therefore
+  currently depends on an accident of adapter design, and the three datasets are not on the same
+  footing. Deciding this is a **Gate C** item: either the search surface exposes the target's
+  history under the same availability rule that already makes it safe for a hand-written program
+  (the 2026-09-11 entry measured Enefit's delivery lag at 11 to 35 hours), or M2 is barred from
+  it too and the expert program is rewritten. Doing neither leaves Enefit's M3 line
+  uninterpretable.
+- **Where the comparison *is* sound, M3 beats M2 on both predictors.** USCRN: 0.8623 against
+  0.8477 under ridge, 0.9054 against 0.9030 under LightGBM. Beijing, more decisively: 0.1238
+  against 0.0541 under ridge, and 0.2052 against 0.0675 under LightGBM — three times the
+  R-squared, and the only cell on that dataset to clear 0.2.
+- **This settles Gate B's open question in the direction that threatens H1.** The question was
+  whether M2 is a bar worth clearing at all, given it was level with M1 on USCRN and Beijing.
+  It is now worse than level: on those two datasets the expert program is **beaten by plain
+  automated search**, and on USCRN under LightGBM M1, M2, M3 and M3f land within 0.003 of each
+  other (0.9056, 0.9030, 0.9054, 0.9063) — a boosted tree given raw values and a clock is
+  indistinguishable from every form of feature engineering tried. Section 9.1 already says the
+  real bar is M3 and that a method unable to beat it is a result to report; this is the
+  measurement behind that sentence.
+- **Made before or after viewing test results:** after; this entry records them. The test fold
+  remains untouched.
+- **Phase / gate:** Phase 6, Gate B — and the principal input to the Gate C protocol freeze.
+
+---
+
+### 2026-09-12 — FASTENER does not beat forward selection, and greedy reaches its result on a fraction of the budget
+
+- **The expectation, from 2026-09-11:** M3f was added because a genetic search keeping a Pareto
+  front indexed by feature count and weighting crossover by mutual information should use a
+  limited budget better than myopic greedy forward selection. At equal budget, it does not.
+
+```text
+R-squared by strategy, equal budget per cell
+                        M3 greedy   M3r random   M3f fastener   winner
+USCRN     ridge            0.8623       0.8545         0.8601   greedy
+USCRN     lightgbm         0.9054       0.9015         0.9063   fastener (+0.0009)
+Beijing   ridge            0.1238       0.0953         0.1136   greedy
+Beijing   lightgbm         0.2052       0.1238         0.1425   greedy (+0.063)
+Enefit65  ridge            0.0961       0.0961         0.0961   tie (see below)
+Enefit65  lightgbm         0.1613       0.1848         0.1428   random
+Enefit0   ridge           -0.0852      -0.1095        -0.0585   fastener
+Enefit0   lightgbm        -3.4787      -3.3763        -3.4787   random (all unusable)
+
+evaluations actually spent, of the frozen budget
+                        M3 greedy   M3r random   M3f fastener
+USCRN                   2670/3500    3500/3500      3500/3500
+Beijing ridge           4650/6000    6000/6000      6000/6000
+Beijing lightgbm        3885/6000    6000/6000      6000/6000
+Enefit65                 291/2500    2500/2500      2500/2500
+Enefit0 ridge            506/2500    2500/2500      2500/2500
+Enefit0 lightgbm         150/2500    2500/2500      2500/2500
+```
+
+- **Greedy wins three cells outright, FASTENER two, random two, with one degenerate tie — and
+  greedy wins both cells on the largest live space.** Beijing offers 393 live candidates, the
+  most of any task, which is precisely the regime where the Pareto argument predicted FASTENER
+  should be strongest. It is where greedy beats it most widely: 0.2052 against 0.1425 under
+  LightGBM.
+- **The efficiency gap is larger than the quality gap and runs the same way.** Greedy stops when
+  no candidate improves the score, so it spent 3,885 of 6,000 on Beijing/LightGBM and reached
+  the best result on that dataset, while FASTENER spent all 6,000 to reach 0.1425. On Enefit it
+  spent 150 to 506 evaluations against the other two strategies' 2,500. Budget *equalisation*
+  under section 9.4 is about what a method is permitted, not what it consumes, so this does not
+  make the comparison unfair — but any cost-quality frontier in the paper has to show that
+  greedy sits far to the left of both competitors.
+- **The Enefit ridge three-way tie is an artifact worth naming, not a coincidence.** M3, M3r and
+  M3f report byte-identical scores there (0.0961 / 34.1829 / 12.1240) from genuinely different
+  selected sets of 5, 12 and 7 features — different file hashes, different feature lists. All
+  three contain the same five-feature core; the extras M3r and M3f add are `count_*`,
+  `missing_count_*` and subtractions of two counts, which are **constant** on a regularly
+  sampled hourly stream and therefore collinear with the intercept and inert under ridge. Greedy
+  halting after 291 evaluations with 5 features says the same thing directly: on a 51-candidate
+  live space, nothing beyond those five improved the score at all.
+- **What this does not establish.** One validation fold, in-sample, one seed per cell, four
+  tasks. Section 9.6 wants seeds treated as an experimental unit and FASTENER is stochastic;
+  a single seed cannot separate a strategy effect from a draw. The honest present claim is that
+  **FASTENER has not demonstrated an advantage at equal budget**, not that it is worse. Running
+  the three generation seeds section 7.3 requires for the LLM conditions would settle it, and is
+  cheap relative to what has just been spent.
+- **Made before or after viewing test results:** after; this entry records them.
+- **Phase / gate:** Phase 6, Gate B — and an input to the Gate C freeze, where the strategy set
+  is fixed.
+
+---
+
+### 2026-09-12 — Unresolved candidates: Enefit is the outlier at three quarters, the other two near one in seven
+
+- **Measured on the Gate B grid**, identically across every cell of a task since the space is a
+  property of the dataset rather than of a strategy:
+
+```text
+task                          proposed   live   unresolved   share
+uscrn_temperature_1h_archive       264    228           36   13.6%
+beijing_pm25_24h                   459    393           66   14.4%
+enefit_* (both units)              205     51          154   75.1%
+```
+
+- **The Enefit figure was already known; the point of this measurement was the other two, and
+  they are not similar.** USCRN and Beijing lose about one candidate in seven to a feature the
+  archive never produces a value for, which is a tolerable background rate. Enefit loses three
+  in four. The 2026-09-11 entry explained why — the task names three of six sources in its
+  options while the space was enumerated over five — and this confirms it is specific to that
+  configuration rather than a general property of the search space.
+- **The consequence for budget fairness is uneven and should be stated in the paper.** The
+  frozen budget is deliberately not recomputed over the live space, for the reason section 9.4
+  gives. But that means the *effective* budget per live candidate differs by a factor of five
+  across datasets: Beijing's 6,000 evaluations cover 393 live candidates, Enefit's 2,500 cover
+  51. A reviewer comparing search quality across datasets needs that number in front of them.
+- **Phase / gate:** Phase 6; a Gate C input.
+
+---
+
+### 2026-09-12 — `invalid_proposal_rate` counts unresolved candidates as verifier rejections
+
+- **The defect:** `SearchReport.invalid_proposal_rate` is
+  `(proposed_candidates - accepted_candidates) / proposed_candidates`, and
+  `accepted_candidates` is counted *after* the unresolved filter drops candidates that are null
+  on every training row. So the section 9.5 invalid-proposal figure reports **0.751 on Enefit,
+  0.136 on USCRN and 0.144 on Beijing**, when `rejected_by_code` is **empty on all four tasks**
+  — the compiler rejected nothing, and the true non-LLM invalid-proposal rate is **0%**, exactly
+  as recorded on 2026-09-11.
+- **It contradicts a docstring five lines above it.** `unresolved_candidates` documents that it
+  is counted separately from `rejected_by_code` because "those are *verifier* rejections and are
+  the H2b measurement, while this is a property of the data". The derived rate then folds them
+  back together.
+- **Why it matters more than an arithmetic slip:** this is the figure the LLM's invalid-proposal
+  rate is to be compared against in section 9.5, and one row of the H2b confusion matrix. Left
+  as it is, the non-LLM baseline would be published as rejecting three quarters of its own
+  proposals on the primary dataset, and any LLM condition would look excellent beside it for no
+  reason.
+- **Not fixed here, deliberately, and it does not need a rerun.** Both raw counts are stored in
+  every `scores.json`, so the corrected rate is recomputable from the artifacts already on disk.
+  Changing a reported metric's definition after seeing results is a protocol change and belongs
+  with the Gate C freeze, recorded rather than performed quietly mid-phase.
+- **Phase / gate:** Phase 6; a Gate C input.
+
+---
+
+### 2026-09-12 — The grid projector's single pilot rate understated the run fourfold
+
+- **Measured against projection:** `--dry-run` planned the grid at ~7h41m; the wall time was
+  **12h27m**, set by Beijing alone. Per task: Enefit 57m17s and 1h19m against ~1h28m each,
+  USCRN 5h07m against ~1h48m, Beijing 12h27m against ~2h55m.
+- **The cause:** the projector applies one constant — the 3.80 evaluations/sec pilot rate — to
+  every task, and that rate was measured on Enefit's 8,734 training rows. Measured here, the
+  rate falls with training rows and also differs by strategy: Enefit 2.8-45.6/s, USCRN 0.8-1.7/s,
+  Beijing 0.6-1.3/s. The 2026-09-11 cost entry flagged that row-count scaling was "an assumption,
+  not a measurement"; the projector is in fact weaker than that caveat, applying no scaling at
+  all.
+- **Greedy's early stopping, offered there as the conservative direction, does not compensate.**
+  It is real — greedy spent 150 to 4,650 evaluations against full budgets — but it applies to one
+  strategy of three, while the rate error applies to all of them.
+- **Two rates, not one, is the repair:** measure per dataset and per strategy, and carry them
+  forward from a completed run rather than from a single pilot. The live per-cell ETA was
+  accurate throughout, because it is measured from the run in progress; only the up-front
+  whole-grid projection was wrong.
+- **Why it is worth an entry:** Phase 9 is the schedule's hard floor and section 11 asks for its
+  compute envelope to be estimated during the pilot. An estimator that is out by a factor of four
+  on the largest task would misplan that phase, and the LLM conditions add API round-trips on top.
+- **Phase / gate:** Phase 6; a Phase 8 and Phase 9 planning input.
