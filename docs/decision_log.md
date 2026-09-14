@@ -2473,3 +2473,64 @@ vifusion M3/lightgbm    48.535   35.840   0.205        -27.1%
   station set would turn the comparison above into a reproduction. The blocker is specific to
   Enefit, and the task says *at least one*.
 - **Phase / gate:** Phase 6 — evidence for the credibility half of the exit criterion.
+
+---
+
+### 2026-09-14 — Seed replication: FASTENER's single win was seed noise, and greedy needs no seed at all
+
+- **What was run and how the freeze was kept.** The three searching tasks re-run at two replicate
+  seeds, **20260914 and 20260915**, both declared before any of them executed. The frozen task
+  configs were **not** edited: a generator copied each one outside the repository, asserting that
+  it still carried the declared `seed: 20260911` before rewriting it, and the copies took their
+  own `seedcheck_*` task names. The declared grid and its hashes are untouched. Six runs, Enefit
+  1h03m and 1h27m each, USCRN 5h09m and 5h10m. Beijing was deliberately not re-run: it is the
+  most expensive task by far and the one where greedy won most widely, so it is the least likely
+  to move and the worst value for 12 hours a seed.
+
+```text
+R-squared by seed, searching cells only
+                    s20260911  s20260914  s20260915       mean        sd     range
+USCRN     M3/ridge     0.8623     0.8623     0.8623     0.8623    0.0000    0.0000
+          M3r/ridge    0.8545     0.8560     0.8525     0.8544    0.0018    0.0035
+          M3f/ridge    0.8601     0.8599     0.8592     0.8597    0.0005    0.0008
+          M3/lgbm      0.9054     0.9054     0.9054     0.9054    0.0000    0.0000
+          M3r/lgbm     0.9015     0.9029     0.9051     0.9032    0.0018    0.0036
+          M3f/lgbm     0.9063     0.9041     0.9050     0.9052    0.0011    0.0022
+Enefit65  M3/lgbm      0.1613     0.1613     0.1613     0.1613    0.0000    0.0000
+          M3r/lgbm     0.1848     0.1781     0.1781     0.1803    0.0039    0.0067
+          M3f/lgbm     0.1428     0.1921     0.1428     0.1593    0.0284    0.0492
+Enefit0   M3/ridge    -0.0852    -0.0852    -0.0852    -0.0852    0.0000    0.0000
+          M3r/ridge   -0.1095    -0.1011    -0.1011    -0.1039    0.0048    0.0084
+          M3f/ridge   -0.0585    -0.0602    -0.0585    -0.0590    0.0010    0.0017
+```
+
+- **The 2026-09-12 conclusion survives, and the one cell that contradicted it was noise.** That
+  entry recorded FASTENER beating greedy in exactly one cell — USCRN/LightGBM, by 0.0009 — and
+  flagged that a single seed could not separate a strategy effect from a draw. It could not:
+  **M3f leads at the declared seed and loses at both replicates** (0.9063 against greedy's
+  constant 0.9054, then 0.9041 and 0.9050), and loses on the mean. Greedy now wins that cell two
+  draws of three and on the average.
+- **Winners by mean across seeds**, with Beijing's two cells carried over from the single-seed
+  grid: greedy 4, random 2, FASTENER 1, one degenerate tie. FASTENER's single remaining win is
+  Enefit unit 0 under ridge, on a fold where every method scores below zero. **No advantage at
+  equal budget, now on three draws rather than one** — and greedy still reaches its result on a
+  fraction of the evaluations.
+- **Greedy is exactly deterministic, and its declared seed is inert.** M3 returns identical
+  figures at all three seeds in every cell, which is what forward selection should do: it has no
+  stochastic step. The `seed:` in its task block therefore does nothing. Worth knowing for
+  Phase 9 costing — greedy needs no seed replication, so the replication budget belongs entirely
+  to the stochastic strategies and, later, to the LLM conditions.
+- **Seed variance is an order of magnitude below the effects being claimed, which is the more
+  reassuring result.** On USCRN the seed standard deviation runs 0.0005 to 0.0018, against an
+  M3-over-M2 margin of 0.0146 and an M3-over-M3r margin of 0.008. The Gate B orderings are not
+  seed artifacts. The exception is **M3f on Enefit unit 65 under LightGBM**, sd 0.0284 and range
+  0.0492 across a 51-candidate live space — a reminder that the strategies are least stable
+  exactly where the space is smallest, which is where the unresolved-candidate filter bites
+  hardest.
+- **Where the artifacts are:** `artifacts/seedcheck_*`, outside the declared grid and gitignored
+  like every other run output. They are a robustness check on a Phase 6 conclusion, not a fourth
+  and fifth cell of the official comparison, and must not be pooled with it.
+- **Made before or after viewing test results:** after; this entry records them. The test fold is
+  untouched.
+- **Phase / gate:** Phase 6 — closes the seed-replication gap named in the exit-criterion
+  adjudication; a Gate C input on how many seeds the frozen protocol should require per strategy.

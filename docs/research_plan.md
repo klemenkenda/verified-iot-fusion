@@ -905,10 +905,13 @@ lag that the naive floor already carries (`M1+lag` closes 73.5% and 80.1% of the
 ridge). Automated search beats it outright on USCRN and Beijing. Section 9.1 already names M3 as
 the baseline H1 actually has to clear and warns that a weak bar makes the headline claim
 unfalsifiable rather than easy; that is now measured rather than anticipated, so **H1 is to be
-stated against M3**, with M2 reported as the expert reference it is. Two items remain open and
-are recorded as such: the reference-result task above, and the fact that every searching cell ran
-one seed where section 9.6 wants seed treated as an experimental unit — which matters more now
-that M3 is the bar. Both are listed in the decision log, 2026-09-12.)*
+stated against M3**, with M2 reported as the expert reference it is.*
+
+*The seed question raised here on 2026-09-14 has since been answered: the three searching tasks
+were re-run at two further declared seeds, and the Gate B orderings hold. Seed standard deviation
+on USCRN runs 0.0005-0.0018 against margins of 0.008-0.015, greedy proves exactly deterministic,
+and the single cell where FASTENER beat greedy reversed under replication. **One item remains
+open — the reference-result task above.** See the decision log, 2026-09-14.)*
 
 *(The earlier run kept for comparison — the first real-data run —
 `configs/tasks/uscrn_temperature_1h_2023.yaml`, validation fold, station 94075 — is ordered as
