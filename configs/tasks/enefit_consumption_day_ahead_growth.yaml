@@ -96,6 +96,15 @@ methods:
       consumption/capacity ratio. Both of its inputs are already M1 columns, so the only
       thing this adds is the quotient.
 
+  - id: M1+lag
+    program: configs/programs/enefit_m1_plus_seasonal_lag.yaml
+    description: >-
+      Ablation arm, not a baseline. M1 with one feature added: `consumption_same_hour_2d`,
+      the 48-hour hour-aligned consumption lag that M2 carries and M0 is scored on. Tests
+      whether M2's Enefit margin over M1 is expert feature engineering or simply the one
+      feature M1 lacks — M1's only consumption column is `last`, which is 11 to 35 hours
+      stale and lands on an arbitrary hour of day. Declared 2026-09-12, before running.
+
   - id: M2-lf
     program: configs/programs/enefit_consumption_no_load_factor.yaml
     description: >-

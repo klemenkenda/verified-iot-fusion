@@ -2362,3 +2362,114 @@ enefit_* (both units)              205     51          154   75.1%
   compute envelope to be estimated during the pilot. An estimator that is out by a factor of four
   on the largest task would misplan that phase, and the LLM conditions add API round-trips on top.
 - **Phase / gate:** Phase 6; a Phase 8 and Phase 9 planning input.
+
+---
+
+### 2026-09-12 — M2's Enefit margin is one lag the naive floor already carries, so the expert bar clears M1 on no dataset
+
+- **The hypothesis, and what prompted it.** The 2026-09-12 grid left Enefit as the sole dataset
+  where M2 separates from M1, and the 2026-09-11 `load_factor` ablation had established only
+  that the margin is *within-stream* — never which within-stream feature. Reading the three
+  programs against each other supplies a candidate that has nothing to do with expertise:
+  **M0 on this task is scored as `seasonal`**, the consumption recorded at the same hour two days
+  ago, and it reaches R-squared 0.5765 unaided. M2 carries that same lag as
+  `consumption_same_hour_2d`. **M1 does not carry it, and has no hour-aligned feature of any
+  kind** — its only consumption column is `consumption_now` (`last`), measured at 11 to 35 hours
+  stale and therefore landing on an arbitrary hour of day.
+- **The arm:** `M1+lag`, M1 with `consumption_same_hour_2d` added and nothing else changed. The
+  lag's source stream is already an M1 source, so the node is the only addition — exactly the
+  shape of `M1+lf`. Declared before running and reported whichever way it came out. Run ids
+  `20260912T120952Z-ee202abe` (unit 65) and `20260912T123156Z-8d97de14` (unit 0).
+
+```text
+                      unit 65 (stationary)          unit 0 (growing)
+                        R2       MAE   closed         R2       MAE   closed
+M1/ridge            0.1635   33.9893       --    -0.3424  155.4665       --
+M1+lag/ridge        0.4971   24.7589    73.5%    -0.0314  131.5209    80.1%
+M2/ridge            0.6172   20.4822   100.0%     0.0457  124.5534   100.0%
+M1+lf/ridge         0.1507   34.2271    -2.8%    -0.2695  150.0663    18.8%
+
+M1/lightgbm         0.0125   37.8520       --    -0.6247  179.8010       --
+M1+lag/lightgbm     0.0922   35.2849    23.8%    -0.3651  159.2057    63.4%
+M2/lightgbm         0.3468   30.0925   100.0%    -0.2150  148.3575   100.0%
+```
+
+- **The hypothesis holds.** One feature closes roughly three quarters of the gap that twelve
+  extra features were producing — 73.5% and 80.1% under ridge, 23.8% and 63.4% under LightGBM.
+  `load_factor`, the feature the previous ablation tested as the explanation, closes between
+  **-2.8% and 18.8%**. The lag is four to twenty-six times more explanatory, and on the
+  stationary unit `load_factor` makes M1 *worse*.
+- **What this does to the 2026-09-11 conclusion.** That entry read M2's Enefit margin as "the
+  first evidence that the bar is a real bar". That reading does not survive. The margin is
+  mostly M1 lacking an hour-aligned autoregressive feature that the **floor already has**, not
+  M2 encoding domain expertise. Taken with the grid — M2 level with M1 on Beijing, split by
+  predictor on USCRN — **the expert program clears raw-values-plus-calendar on none of the three
+  datasets.** Section 9.1 casts M2 as the human bar H1 must clear; on this evidence it is not a
+  bar, and H1 should be stated against M3.
+- **It also completes the Enefit M3 story.** M3 is barred from the target stream by
+  `searchable_sources`, so it cannot reach this lag either — which is why it lands with M1
+  (0.0961) rather than with M2 (0.6172). Once the lag is accounted for, the whole Enefit M3
+  deficit is the exclusion rule and none of it is search quality.
+- **An oddity recorded rather than buried:** on unit 65 `M1+lag/ridge` (0.4971) is still *below*
+  M0 (0.5765). Seven features including the lag do worse than the lag alone returned unchanged,
+  so M1's other columns actively hurt under ridge here. M2's thirteen features do clear the floor
+  (0.6172), so it is not simply that more features hurt.
+- **A determinism result obtained for free.** The regenerated tables reproduce **every**
+  pre-existing row byte-identically against the runs of the previous day — M3/ridge still
+  0.0961 / 34.1829 / 12.1240, M3f/lightgbm still 0.1428 / 33.6376 — across a day's gap, a
+  different task configuration and a different output directory, and including a boosted-tree fit
+  and a stochastic genetic search. Section 12's byte-identical rerun requirement was previously
+  asserted by a unit test on one seed; it is now demonstrated end to end on the real grid.
+- **Status of the arm:** `M1+lag` stays in both Enefit task configs, labelled an ablation arm and
+  not a baseline. Like `M1+lf` it is a feature hand-picked after seeing M2 win, and reporting it
+  as a baseline would be a rigged comparison.
+- **Made before or after viewing test results:** the hypothesis was formed after seeing the grid;
+  the arm was declared before it was run, and the test fold remains untouched.
+- **Phase / gate:** Phase 6, Gate B — and it settles the exit criterion's open half.
+
+---
+
+### 2026-09-12 — Checked against the literature: Beijing is at the published state of the art, USCRN's gap is the availability handicap
+
+- **Why this was done:** the absolute numbers read badly at a glance — R-squared near 0.2 on
+  Beijing, 0.05 on Beijing's M1/M2 — and a result that *looks* poor without a reference point
+  invites the wrong correction. Checked before concluding anything about the pipeline.
+- **Beijing, against a 2026 study on the same dataset, same 12 stations, same 24-hour horizon,
+  chronological split** ([arXiv 2607.07279](https://arxiv.org/html/2607.07279)):
+
+```text
+                         RMSE      MAE      R2   vs persistence (RMSE)
+published persistence   98.151   65.172  -0.117            --
+published Ridge         81.872   56.729   0.223        -16.6%
+published Elastic Net   80.829   57.127   0.242        -17.7%
+published XGBoost       82.660   56.365   0.208        -15.8%
+vifusion M3/lightgbm    48.535   35.840   0.205        -27.1%
+```
+
+  The R-squared sits inside the published band. Absolute RMSE is **not** comparable — one station
+  over one validation quarter against twelve pooled over a 15% test block — but the scale-free
+  comparison is: this engine reduces RMSE over its own persistence floor by 27.1% where the
+  published best manages 17.7%. And it does so on stricter inputs: that study feeds models
+  "observed origin-time meteorological values" and concedes "an operational 24-hour deployment
+  would substitute weather forecasts", which is precisely the availability optimism the replay
+  clock forbids. Their 1-hour R-squared is 0.953, which is why most PM2.5 papers look impressive
+  and why ~0.21 at 24 hours is the honest number.
+- **USCRN is the one dataset that looks weak, and the cause is the one the dataset was chosen to
+  expose.** Published 1-hour-ahead hourly temperature MAE runs 0.3-1.0 degC; the best cell here is
+  1.21 degC. But those studies predict t+1 from an observation at t, while availability here is
+  the close of the dissemination window, so the forecast is **effectively two hours out** — and
+  from a single station where they use multi-variable and often multi-station inputs. The gap is
+  about what doubling the lead costs on a diurnal signal. **The manuscript must print the
+  effective lead beside the MAE**, or a reviewer reads 1.21 degC as a weak model rather than as
+  the phenomenon under study.
+- **Enefit is not comparable to its leaderboard** — the Kaggle metric is panel MAE over 69 units
+  and both targets — and the reference-result task remains blocked for that reason. The useful
+  literature point is already in `docs/literature_matrix.csv`: OCTree improves Enefit by 2.3%
+  (GPT-4o) and 0.0% (Llama 2), CAAFE by 0.4%. Published LLM feature engineering gets almost
+  nothing on this dataset, which is context H1 needs.
+- **The consequence for Phase 6's unchecked task.** "Reproduce at least one published or
+  competition-quality reference result where feasible" has been treated as blocked on Enefit
+  entity pooling. Beijing offers a route needing no panel at all: matching that study's split and
+  station set would turn the comparison above into a reproduction. The blocker is specific to
+  Enefit, and the task says *at least one*.
+- **Phase / gate:** Phase 6 — evidence for the credibility half of the exit criterion.

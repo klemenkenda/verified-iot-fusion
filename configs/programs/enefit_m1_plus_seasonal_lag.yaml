@@ -1,0 +1,103 @@
+# M1 + the hour-aligned 48-hour consumption lag. An ablation arm, not a baseline.
+#
+# Why this arm exists. The Gate B grid of 2026-09-12 left Enefit as the one dataset where the
+# expert program separates from raw-values-plus-calendar: M2/ridge 0.6172 against M1/ridge
+# 0.1635. The `load_factor` ablation of 2026-09-11 established that the margin is *within-stream*
+# but never isolated which within-stream feature carries it. Reading the two programs against
+# the floor suggests an answer that has nothing to do with expertise:
+#
+#   - M0 on this task is scored as `seasonal` — the consumption this unit recorded at the same
+#     hour two days ago — and reaches R-squared 0.5765 on its own.
+#   - M2 carries that same lag as `consumption_same_hour_2d`.
+#   - M1 does not. Its only consumption feature is `consumption_now` (`last`), the freshest
+#     *available* target, measured at 11 to 35 hours old and therefore landing on an arbitrary
+#     hour of day. M1 has no hour-aligned autoregressive feature at all.
+#
+# If that is the whole story, M2's margin is not evidence that the human bar is a real bar; it
+# is evidence that M1 is missing the one feature the task turns on, and the floor already has
+# it. This arm tests exactly that: M1 with `consumption_same_hour_2d` added and nothing else
+# changed. The lag's source stream is already an M1 source, so the node is the only addition.
+#
+# Declared before it was run, and reported whichever way it comes out — as `M1+lf` and `M2-lf`
+# were. It is an ablation arm and must not be read as a baseline: the feature was chosen after
+# seeing M2 win, so reporting it as a baseline would be a rigged comparison.
+#
+# Reading the target source is permitted here under the rule of 2026-09-11: the source is
+# declared honestly as `kind: label`, and no non-label source the Enefit adapter emits carries
+# consumption. What makes it safe is availability rather than source membership — a target is
+# handed back two blocks after the block that asked for it, so the predicted hour cannot reach
+# its own feature vector. Forty-eight hours rather than twenty-four for the same measured
+# reason the floor uses 48: an individual target's delivery lag runs 12 to 35 hours, so a
+# 24-hour same-hour lag is null at roughly half of the prediction times.
+schema_version: "0.1.0"
+name: enefit_m1_plus_seasonal_lag
+
+sources:
+  - source_id: enefit_target
+    feature_name: target_consumption
+    kind: label
+    value_type: number
+    unit: kilowatt_hour
+    max_input_rate_per_hour: 4
+    description: Hourly consumption, revealed two blocks after the block that asked for it.
+
+  - source_id: enefit_weather_actual
+    feature_name: temperature
+    kind: measurement
+    value_type: number
+    unit: degC
+    max_input_rate_per_hour: 4
+    description: Measured weather at a grid point.
+
+  - source_id: enefit_client
+    feature_name: installed_capacity
+    kind: static
+    value_type: number
+    unit: kilowatt
+    max_input_rate_per_hour: 4
+    description: Installed capacity of a prediction unit.
+
+entity_graphs:
+  - name: weather_stations
+    max_related_entities: 6
+    description: The weather grid points sitting in a prediction unit's county.
+
+nodes:
+  - id: consumption_now
+    op: last
+    params: {source: enefit_target, feature: target_consumption}
+
+  # The only addition to M1. Identical to M2's node of the same name.
+  - id: consumption_same_hour_2d
+    op: lag
+    params: {source: enefit_target, feature: target_consumption, lag: 48h}
+
+  - id: county_temp
+    op: cross_entity_mean
+    params:
+      source: enefit_weather_actual
+      feature: temperature
+      entity_ref: weather_stations
+
+  - id: capacity
+    op: last
+    params: {source: enefit_client, feature: installed_capacity}
+
+  - id: hour
+    op: hour_of_day
+    params: {timezone: Europe/Tallinn}
+  - id: day_of_year
+    op: day_of_year
+    params: {timezone: Europe/Tallinn}
+  - id: weekend
+    op: is_weekend
+    params: {timezone: Europe/Tallinn}
+
+outputs:
+  - consumption_now
+  - consumption_same_hour_2d
+  - county_temp
+  - capacity
+  - hour
+  - day_of_year
+  - weekend
