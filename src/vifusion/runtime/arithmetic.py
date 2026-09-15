@@ -21,9 +21,48 @@ an expression the program declared and the compiler checked.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 from vifusion.temporal.specs import FeatureValue
 
 Operation = str
+
+
+def apply_unary(
+    node_id: str, operation: Operation, value: FeatureValue, params: Mapping[str, Any]
+) -> FeatureValue:
+    """Apply a one-input operator to an already-computed feature.
+
+    The categorical predicates live here rather than among the aggregates because they test a
+    value that some other node produced: ``equals(last(wd), "NW")`` asks about the current
+    wind, ``equals(mode(wd, 24h), "NW")`` about the prevailing one, and neither reading is
+    more primitive than the other.
+
+    **A predicate propagates null rather than answering false.** "The wind is not from the
+    north-west" and "we do not know where the wind is from" are different claims, and a model
+    given 0.0 for both cannot tell them apart.
+    """
+    if value.value is None:
+        return FeatureValue(name=node_id, value=None)
+    if not isinstance(value.value, str):
+        raise TypeError(
+            f"{node_id}: {operation!r} tests a category, but its input is "
+            f"{value.value!r}; the compiler should have rejected this with E-TYPE-001"
+        )
+    if operation == "equals":
+        matched = value.value == params["value"]
+    elif operation == "is_in":
+        members: Sequence[Any] = params["values"]
+        matched = value.value in set(members)
+    else:
+        raise ValueError(f"{node_id}: {operation!r} is not a one-input operator")
+    return FeatureValue(
+        name=node_id,
+        value=1.0 if matched else 0.0,
+        lineage=value.lineage,
+        max_available_time=value.max_available_time,
+    )
 
 
 def combine(

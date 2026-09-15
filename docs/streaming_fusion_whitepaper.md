@@ -3,7 +3,7 @@
 **How heterogeneous IoT streams become a verified feature vector**
 
 *A technical whitepaper for the `verified-iot-fusion` artifact.*
-Revision 2026-09-15 · 16 figures · plan of record: [docs/research_plan.md](research_plan.md)
+Revision 2026-09-16 · 16 figures · plan of record: [docs/research_plan.md](research_plan.md)
 
 ---
 
@@ -559,9 +559,10 @@ protocol decision — and had left operators the plan of record specifies unimpl
 | Forecast | `forecast` (lead + revision policy) | eligible issues for `t + lead` | one entry per reachable valid time |
 | Calendar | `hour_of_day` … `day_after_holiday` | **nothing** — pure function of `t` | none |
 | Cross-entity | `cross_entity_mean` | latest value on each related entity | one record per related entity |
+| Categorical | `mode` `distinct_count` over a window; `equals` `is_in` over a node | a category | retained raw window; none for the predicates |
 | Arithmetic | `add` `subtract` `multiply` `divide` `coalesce` | other nodes | none |
 
-#### The fifteen window aggregates
+#### The seventeen window aggregates
 
 Every one of these reduces the same thing — the raw records retained for the trailing window
 `(t - w, t]` — and every one is exact over that window. They differ only in what they reduce it
@@ -581,6 +582,19 @@ to, and in whether they read event times as well as values.
 | `mad` | `median(abs(x - median(x)))`, **unscaled** | preserved | exact |
 | `slope` | least-squares trend of value on event time | unit **per second** | 32 ulp |
 | `time_since_max` / `time_since_min` | seconds back to the extremum | seconds | exact |
+| `mode` | most frequent value; ties to the most recent | preserved | exact |
+| `distinct_count` | how many distinct values occurred | dimensionless | exact |
+
+The last two are defined on a **category** as well as a number, and they are the only two
+that are. Every other aggregate declares a numeric input, and the compiler refuses the
+rest with `E-TYPE-002` — a mean of a wind direction is not a weak feature but a meaningless
+one. `mode` and `distinct_count` escape that rule by doing no arithmetic: one counts
+occurrences and selects, the other counts distinct values. A category is then tested with
+`equals` or `is_in`, which take a *node* rather than a stream, so `equals(last(wd), "N")` asks
+about the current wind and `equals(mode(wd, 24h), "N")` about the prevailing one. A predicate
+answers with a number and **propagates null rather than answering false** — "not northerly"
+and "we do not know" are different claims, and a model handed `0.0` for both cannot separate
+them.
 
 Four conventions are fixed once and shared by all three implementations, because a convention
 two implementations chose differently would make the differential suite measure the convention
@@ -595,6 +609,9 @@ instead of the code:
 * **`slope` is a rate**, reported per second and given its own unit rule so that a trend cannot
   compile to the units of a level. It is null below two observations, and null when every
   observation in the window shares one event time — a vertical line is not a steep one.
+* **`mode` breaks a tie toward the most recent category**, the same rule, so that "the
+  prevailing value" means one thing wherever it appears. A mode is a selection: it returns a
+  value that actually occurred, never a blend, which is what lets it carry lineage at all.
 * **Ties in `time_since_*` go to the most recent occurrence.** "How long since the peak" means
   the latest peak. This is the likeliest place three implementations drift apart, because the
   natural spellings of `max` and `min` break ties in opposite directions.
@@ -1259,10 +1276,9 @@ That last paragraph is the argument for measuring rather than asserting, in mini
 * **No approximate sketches.** A deliberate cost: exactness is what makes parity testable as
   an equality. It is also what makes the order statistics affordable — the window is already
   materialised, so a median costs what a mean costs.
-* **Aggregates are numeric only.** A categorical stream can be read by `last` and by nothing
-  else: there is no `mode`, no distinct count, no categorical equality or membership, though
-  the plan of record specifies the last of these. Beijing ships wind direction as a category,
-  and a wind-direction feature over a window is currently inexpressible.
+* **A category supports counting and testing, not ordering.** `mode`, `distinct_count`,
+  `equals` and `is_in` are the whole of it: there is no ordering on a category, so no
+  quantile, no extremum and no trend. That is a property of the data rather than a gap.
 * **The `inferred` availability model raises.** No committed dataset needs it, and
   implementing a model nothing routes through is how an unused guess ends up in a result.
 * **Simulated availability is an assumption, and is labelled one.** Beijing's delays are

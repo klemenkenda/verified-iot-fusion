@@ -2617,3 +2617,46 @@ Enefit0   M3/ridge    -0.0852    -0.0852    -0.0852    -0.0852    0.0000    0.00
 - **Phase / gate:** Phase 6 — closes the section 5.3 gap for numeric operators. Categorical
   equality and membership remain specified and unimplemented; Beijing's wind direction is still
   readable only by `last`.
+
+### 2026-09-16 — Categorical operators, and why they were on the critical path
+
+- **Decision:** Registered `mode` and `distinct_count`, the two trailing-window aggregates a
+  category admits, and `equals` and `is_in`, which test a computed category and answer with a
+  number. All four are implemented in each of the engine, the batch lowering and the oracle
+  where more than one path applies, and all carry a parity tolerance of zero. `equals` and
+  `is_in` are the first operators of arity one and the first node operators to take
+  parameters, so `NodePlan` now carries a node's literals through to the runtime and the
+  compiler validates them; a malformed predicate is refused with E-SCHEMA-001 or E-GRAPH-004
+  rather than failing at execution.
+- **Alternatives considered:** (1) Excluding categorical sources from
+  `searchable_sources`, as the grid search already does — rejected: it closes the measurement
+  problem by discarding a stream that predicts the target, and it would have to be undone
+  later anyway. (2) Making the predicates source-reading leaves — rejected: they would then
+  duplicate `last`'s staleness handling and could not test a `mode`, which is the more
+  interesting of the two readings. (3) Allowing the predicates over numbers — rejected:
+  float equality is a trap that compiles, and the registry declares a category input so the
+  compiler refuses it with E-TYPE-001. (4) Ordering operators over categories — rejected as
+  meaningless rather than unimplemented; there is no order on a category, so no quantile, no
+  extremum, no trend.
+- **Rationale:** This was the last unimplemented item in section 5.3, and it was not merely
+  outstanding — it was about to corrupt a headline statistic. `searchable_sources` hands a
+  proposer Beijing's `wd` stream, and until today nothing in the DSL could use it except
+  `last`. The grid search sidesteps that by excluding categorical sources outright, with a
+  docstring saying so. An LLM proposer has no such filter, so every feature it wrote over `wd`
+  would have been rejected because the *DSL* lacked an operator, not because the model made a
+  temporal error — and section 9.5's invalid-proposal rate is the H2b measurement of exactly
+  that distinction. Discovering this after the Gate C prompt freeze would have meant either a
+  contaminated statistic or an unfrozen prompt.
+- **Affected experiments / artifacts:** None yet. `FROZEN_V1_OPERATORS` is unchanged, so no
+  recorded baseline searches a different space, and `enumerate_candidates` still draws only
+  from numeric sources. Whether the non-LLM grid should be widened to categorical sources is a
+  separate, declared decision and a Gate C input: leaving it narrow keeps M3 the baseline it
+  has always been, but hands the LLM arm an operator family the search cannot reach, which is
+  an asymmetry the comparison would have to name.
+- **Made before or after viewing test results:** not applicable — no score moves. Two coverage
+  guards fired on the addition and were satisfied rather than relaxed: the parity program
+  gained a categorical stream so the new operators are exercised, and the unit property gained
+  a case for a dimensionless one-input operator.
+- **Phase / gate:** Phase 6 — closes section 5.3. Phases 7-8 and the Gate C prompt freeze are
+  now the critical path, with the feedback payload the item that most needs designing rather
+  than coding.

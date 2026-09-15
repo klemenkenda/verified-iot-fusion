@@ -34,6 +34,21 @@ longer includes any concern about disturbing a banked result.
 **Additions, with the failure analysis that earned them** — section 5.3 admits an operator only
 from a documented failure, so each one is named here:
 
+* ``mode``, ``distinct_count``, ``equals`` and ``is_in`` (2026-09-16). The same failure to
+  implement the plan, on its last remaining item: section 5.3 names categorical equality and
+  membership, and a category could be read by ``last`` and by nothing else. The cost was not
+  hypothetical. ``DatasetBundle.searchable_sources`` hands a proposer Beijing's ``wd`` stream —
+  wind direction, which is not a subtle predictor of PM2.5 — and the grid search sidesteps it
+  by excluding categorical sources outright. An LLM proposer has no such filter, so every
+  feature it wrote over ``wd`` would have been rejected for the DSL lacking an operator rather
+  than for anything the model got wrong, and section 9.5's invalid-proposal rate is the H2b
+  measurement. Inflating it with the verifier's own gaps would corrupt the statistic the
+  verification claim rests on.
+
+  ``equals`` and ``is_in`` are the first operators to take one input rather than two, and the
+  first node operators to carry parameters; both take a *node*, so a predicate reads
+  ``last`` or ``mode`` alike. They refuse a numeric input on purpose — float equality is a
+  trap that compiles.
 * ``median``, ``p25``, ``p75``, ``iqr``, ``mad``, ``slope``, ``time_since_max`` and
   ``time_since_min`` (2026-09-15). Not a failure in the field but a **failure to implement the
   plan**: section 5.3 names exact quantiles and a trailing slope among the operators the first
@@ -65,7 +80,7 @@ from typing import Literal
 
 from vifusion.dsl.schema import TimeDirection, ValueType
 from vifusion.temporal.calendar import CalendarField
-from vifusion.temporal.specs import TIME_AWARE, Aggregate
+from vifusion.temporal.specs import CATEGORICAL, TIME_AWARE, Aggregate
 
 UnitRule = Literal[
     "preserve", "multiply", "divide", "dimensionless", "seconds", "per_second", "custom"
@@ -194,6 +209,41 @@ def _aggregate_operator(
         aggregate=aggregate,
         batch_lowering=parity,
         parity_tolerance_ulps=tolerance,
+        windowed=True,
+    )
+
+
+def _category_operator(
+    name: str,
+    aggregate: Aggregate,
+    summary: str,
+    *,
+    follows_source: bool,
+    output_type: ValueType = "number",
+    unit_rule: UnitRule = "dimensionless",
+) -> Operator:
+    """A trailing-window aggregate that a *categorical* stream admits.
+
+    Separate from :func:`_aggregate_operator` because that one declares a numeric input and
+    the compiler refuses it over a category with E-AGG-CAT. These two do no arithmetic, so the
+    refusal does not apply — and a stream like Beijing's wind direction, which until now could
+    be read by ``last`` and by nothing else, becomes summarisable over a window.
+    """
+    assert aggregate in CATEGORICAL, f"{name!r} is not declared categorical in specs"
+    return Operator(
+        name=name,
+        summary=summary,
+        arity=0,
+        reads_source=True,
+        input_types=(),
+        output_type=output_type,
+        output_follows_source=follows_source,
+        unit_rule=unit_rule,
+        time_direction="past_only",
+        null_policy="propagate",
+        required_params=frozenset({"source", "feature", "window"}),
+        aggregate=aggregate,
+        batch_lowering="exact",
         windowed=True,
     )
 
@@ -366,6 +416,19 @@ OPERATORS: dict[str, Operator] = {
             "Seconds since the most recent occurrence of the window's minimum.",
             unit_rule="seconds",
         ),
+        _category_operator(
+            "mode",
+            Aggregate.MODE,
+            "Most frequent value in the window; ties go to the most recent.",
+            follows_source=True,
+            unit_rule="preserve",
+        ),
+        _category_operator(
+            "distinct_count",
+            Aggregate.DISTINCT_COUNT,
+            "Number of distinct values in the window.",
+            follows_source=False,
+        ),
         _cross_entity_operator(
             "cross_entity_mean",
             Aggregate.MEAN,
@@ -432,6 +495,32 @@ OPERATORS: dict[str, Operator] = {
             unit_rule="divide",
             time_direction="past_only",
             null_policy="propagate",
+            batch_lowering="exact",
+        ),
+        Operator(
+            name="equals",
+            summary="One when the input category equals the declared value, else zero.",
+            arity=1,
+            reads_source=False,
+            input_types=("category",),
+            output_type="number",
+            unit_rule="dimensionless",
+            time_direction="past_only",
+            null_policy="propagate",
+            required_params=frozenset({"value"}),
+            batch_lowering="exact",
+        ),
+        Operator(
+            name="is_in",
+            summary="One when the input category is among the declared values, else zero.",
+            arity=1,
+            reads_source=False,
+            input_types=("category",),
+            output_type="number",
+            unit_rule="dimensionless",
+            time_direction="past_only",
+            null_policy="propagate",
+            required_params=frozenset({"values"}),
             batch_lowering="exact",
         ),
         Operator(

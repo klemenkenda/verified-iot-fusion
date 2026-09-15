@@ -50,6 +50,12 @@ PROGRAM: dict[str, Any] = {
             "max_input_rate_per_hour": 8,
         },
         {
+            "source_id": "s1",
+            "feature_name": "wind_dir",
+            "value_type": "category",
+            "max_input_rate_per_hour": 8,
+        },
+        {
             "source_id": "nwp",
             "feature_name": "temp_fc",
             "kind": "forecast",
@@ -115,6 +121,30 @@ PROGRAM: dict[str, Any] = {
             "id": "since_lo",
             "op": "time_since_min",
             "params": {"source": "s1", "feature": "temp", "window": "3h"},
+        },
+        # The categorical family, added 2026-09-16. `wd_mode` feeds `wd_northerly` so that the
+        # predicate is exercised over a computed category and not only over `last`.
+        {
+            "id": "wd_now",
+            "op": "last",
+            "params": {"source": "s1", "feature": "wind_dir"},
+        },
+        {
+            "id": "wd_mode",
+            "op": "mode",
+            "params": {"source": "s1", "feature": "wind_dir", "window": "3h"},
+        },
+        {
+            "id": "wd_variety",
+            "op": "distinct_count",
+            "params": {"source": "s1", "feature": "wind_dir", "window": "3h"},
+        },
+        {"id": "wd_is_n", "op": "equals", "inputs": ["wd_now"], "params": {"value": "N"}},
+        {
+            "id": "wd_northerly",
+            "op": "is_in",
+            "inputs": ["wd_mode"],
+            "params": {"values": ["N", "NW", "NE"]},
         },
         {
             "id": "fc",
@@ -191,6 +221,11 @@ PROGRAM: dict[str, Any] = {
         "trend",
         "since_hi",
         "since_lo",
+        "wd_now",
+        "wd_mode",
+        "wd_variety",
+        "wd_is_n",
+        "wd_northerly",
         "fc",
         "nbr_avg",
         "t_or_last",
@@ -236,6 +271,24 @@ def _log(draw: st.DrawFn) -> list[CanonicalRecord]:
                 source_id="s1",
                 feature_name="temp",
                 value=draw(st.one_of(st.none(), st.floats(200.0, 320.0, allow_nan=False))),
+                event_time=event_time,
+                available_time=event_time + delay * STEP,
+            )
+        )
+    for index in range(draw(st.integers(min_value=0, max_value=8))):
+        event_step = draw(st.integers(min_value=0, max_value=12))
+        delay = draw(st.integers(min_value=0, max_value=4))
+        event_time = BASE + event_step * STEP
+        records.append(
+            CanonicalRecord(
+                record_id=f"w{index:03d}",
+                kind=RecordKind.MEASUREMENT,
+                entity_id="e1",
+                source_id="s1",
+                feature_name="wind_dir",
+                # A small alphabet on purpose: ties in the mode are the interesting case, and
+                # eight directions over a three-hour window would almost never produce one.
+                value=draw(st.one_of(st.none(), st.sampled_from(["N", "NW", "SE"]))),
                 event_time=event_time,
                 available_time=event_time + delay * STEP,
             )
@@ -309,6 +362,11 @@ def test_batch_and_streaming_agree(log: list[CanonicalRecord], times: list[datet
 
             if left.value is None or right.value is None:
                 assert left.value is right.value, f"{node_id}: one path returned null"
+                continue
+            if isinstance(left.value, str) or isinstance(right.value, str):
+                # A category admits no tolerance, for the same reason lineage does not: it is
+                # a selection among declared values, and "close" is not a relation on it.
+                assert left.value == right.value, f"{node_id}: {left.value!r} vs {right.value!r}"
                 continue
             tolerance = PLAN.nodes[node_id].parity_tolerance_ulps * EPSILON
             assert math.isclose(

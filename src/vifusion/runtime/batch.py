@@ -29,12 +29,13 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from vifusion.compiler.compile import EntityGraphs, ExecutionPlan, related_spec_name
-from vifusion.runtime.arithmetic import combine
+from vifusion.runtime.arithmetic import apply_unary, combine
 from vifusion.temporal import calendar
 from vifusion.temporal.boundaries import in_trailing_window, within_staleness
 from vifusion.temporal.records import CanonicalRecord, RecordKind, deduplicate
 from vifusion.temporal.replay import PredictionRequest
 from vifusion.temporal.specs import (
+    CATEGORICAL,
     TIME_AWARE,
     Aggregate,
     CalendarFeature,
@@ -72,6 +73,10 @@ BATCH_LOWERINGS = frozenset(
         "slope",
         "time_since_max",
         "time_since_min",
+        "mode",
+        "distinct_count",
+        "equals",
+        "is_in",
         "cross_entity_mean",
         "add",
         "subtract",
@@ -194,6 +199,27 @@ def _quantile(values: Sequence[float], level: float) -> float:
     if floor >= highest:
         return ordered[highest]
     return ordered[floor] + (position - floor) * (ordered[floor + 1] - ordered[floor])
+
+
+def _category_aggregate(
+    records: Sequence[CanonicalRecord], aggregate: Aggregate
+) -> float | str | None:
+    """The two aggregates a category admits. See ``specs.CATEGORICAL``."""
+    present = [record for record in records if record.value is not None]
+    if aggregate is Aggregate.DISTINCT_COUNT:
+        return float(len({record.value for record in present}))
+    if not present:
+        return None
+
+    ranked: dict[float | str, tuple[int, datetime]] = {}
+    for record in present:
+        value = record.value
+        assert value is not None
+        count, newest = ranked.get(value, (0, record.event_time))
+        ranked[value] = (count + 1, max(newest, record.event_time))
+    # Count, then newest occurrence, then a total fallback so the answer cannot depend on
+    # iteration order. The rule is fixed in `specs`.
+    return max(ranked, key=lambda value: (ranked[value][0], ranked[value][1], str(value)))
 
 
 def _time_aggregate(
@@ -342,6 +368,8 @@ def _evaluate_leaf(
             for record in observed
             if in_trailing_window(record.event_time, prediction_time, spec.window)
         ]
+        if spec.aggregate in CATEGORICAL:
+            return _value(spec.name, _category_aggregate(in_window, spec.aggregate), in_window)
         numbers: list[float] = []
         for record in in_window:
             if record.value is None or isinstance(record.value, str):
@@ -417,6 +445,10 @@ def execute(
                 values[node_id] = _reduce_related(node_id, node.spec.aggregate, shadows)
             elif node.spec is not None:
                 values[node_id] = _evaluate_leaf(specs[node_id], index, prediction_time)
+            elif len(node.inputs) == 1:
+                values[node_id] = apply_unary(
+                    node_id, node.op, values[node.inputs[0]], node.params
+                )
             else:
                 left, right = (values[name] for name in node.inputs)
                 values[node_id] = combine(node_id, node.op, left, right)

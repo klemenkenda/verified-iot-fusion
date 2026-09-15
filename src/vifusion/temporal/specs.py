@@ -53,6 +53,13 @@ slope is invariant to shifting the time axis — and is fixed at the window's ea
 only to keep the numbers small enough that the centred sums stay well conditioned. Its unit is
 the source's unit per second.
 
+**The mode breaks a tie toward the most recent category, and never interpolates.** When two
+categories occur equally often in the window, the one whose newest occurrence is later wins —
+the same tie rule ``time_since_max`` uses, chosen once so that "the prevailing value" means
+the same thing wherever the phrase appears. A mode is therefore a *selection*: it returns a
+value that actually occurred, never a blend, which is what lets it carry the lineage of the
+records that produced it.
+
 **Time since an extremum is measured to the most recent occurrence.** When a window's maximum
 appears more than once, ``time_since_max`` reports the seconds from the *latest* record
 carrying it to the prediction time, which is the reading a question like "how long since the
@@ -90,10 +97,23 @@ class Aggregate(StrEnum):
     SLOPE = "slope"
     TIME_SINCE_MAX = "time_since_max"
     TIME_SINCE_MIN = "time_since_min"
+    MODE = "mode"
+    DISTINCT_COUNT = "distinct_count"
+
+
+CATEGORICAL: frozenset[Aggregate] = frozenset({Aggregate.MODE, Aggregate.DISTINCT_COUNT})
+"""Aggregates that reduce a window without doing arithmetic on it.
+
+Every other aggregate rejects a categorical stream, and the compiler has a diagnostic code
+for the attempt: a mean of a wind direction is not a weaker feature, it is a meaningless one.
+These two are the exception because neither adds, divides, or orders anything — ``mode``
+counts occurrences and selects, ``distinct_count`` counts distinct values — so both are
+defined on categories and on numbers alike. They are what makes a categorical stream
+readable by something other than ``last``."""
 
 
 TIME_AWARE: frozenset[Aggregate] = frozenset(
-    {Aggregate.SLOPE, Aggregate.TIME_SINCE_MAX, Aggregate.TIME_SINCE_MIN}
+    {Aggregate.SLOPE, Aggregate.TIME_SINCE_MAX, Aggregate.TIME_SINCE_MIN, Aggregate.MODE}
 )
 """Aggregates that read each observation's event time, not only its value.
 
@@ -121,6 +141,8 @@ PARITY_TOLERANCE_ULPS: dict[Aggregate, int] = {
     Aggregate.TIME_SINCE_MAX: 0,
     Aggregate.TIME_SINCE_MIN: 0,
     Aggregate.SLOPE: 32,
+    Aggregate.MODE: 0,
+    Aggregate.DISTINCT_COUNT: 0,
 }
 """Declared parity budget per operator, in units in the last place (section 10.2).
 

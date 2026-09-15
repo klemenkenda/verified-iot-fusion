@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 import pint
+import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -58,6 +59,8 @@ LEAF_PARAMS: dict[str, dict[str, Any]] = {
     "slope": {"window": "2h"},
     "time_since_max": {"window": "2h"},
     "time_since_min": {"window": "2h"},
+    "mode": {"window": "2h"},
+    "distinct_count": {"window": "2h"},
     "forecast": {"lead": "2h"},
     "cross_entity_mean": {"entity_ref": "neighbours"},
 }
@@ -254,11 +257,81 @@ def test_arithmetic_combines_units_or_refuses_to(
     assert _dimensionality(assigned) == expected, f"{left!r} {op} {right!r} gave {assigned!r}"
 
 
+CATEGORICAL_PREDICATES: dict[str, dict[str, Any]] = {
+    "equals": {"value": "N"},
+    "is_in": {"values": ["N", "NW"]},
+}
+"""The one-input operators that read a category. Their own property is below: they cannot go
+through the leaf generator, because their input is a node rather than a stream."""
+
+
+@pytest.mark.parametrize("op", sorted(CATEGORICAL_PREDICATES))
+@given(unit=SOURCE_UNITS)
+@SETTINGS
+def test_a_categorical_predicate_is_dimensionless_whatever_its_source_declares(
+    op: str, unit: str | None
+) -> None:
+    """A predicate answers yes or no, so no unit of its input can reach its output.
+
+    The source still carries a declared unit here even though it is categorical, because the
+    interesting failure is a predicate that *inherits* one: a wind direction tested for "N"
+    must not produce a feature measured in kelvin, and `preserve` is the default rule an
+    operator falls into if nobody sets one.
+    """
+    program = {
+        "schema_version": DSL_SCHEMA_VERSION,
+        "name": "units",
+        "sources": [
+            {
+                "source_id": "s1",
+                "feature_name": "wd",
+                "value_type": "category",
+                "unit": unit,
+                "max_input_rate_per_hour": 4,
+            }
+        ],
+        "nodes": [
+            {"id": "now", "op": "last", "params": {"source": "s1", "feature": "wd"}},
+            {"id": "node", "op": op, "inputs": ["now"], "params": CATEGORICAL_PREDICATES[op]},
+        ],
+        "outputs": ["node"],
+    }
+    result = _compile(program)
+
+    assert result.accepted, [str(diagnostic) for diagnostic in result.diagnostics]
+    assert result.plan is not None
+    assert result.plan.nodes["node"].unit == DIMENSIONLESS, f"{op} leaked its input's unit"
+    assert result.plan.nodes["node"].value_type == "number", f"{op} answers with a number"
+
+
+def test_a_categorical_predicate_refuses_a_numeric_input() -> None:
+    """Float equality is a trap, and the registry declares these operators to take a category.
+
+    Without this the compiler would happily build `equals(mean(temp, 2h), "3.5")`, which can
+    only ever be false and would look like a working feature.
+    """
+    program = {
+        "schema_version": DSL_SCHEMA_VERSION,
+        "name": "units",
+        "sources": _sources("kelvin"),
+        "nodes": [
+            {"id": "t", "op": "last", "params": {"source": "s1", "feature": "temp"}},
+            {"id": "node", "op": "equals", "inputs": ["t"], "params": {"value": "N"}},
+        ],
+        "outputs": ["node"],
+    }
+    result = _compile(program)
+
+    assert not result.accepted
+    assert Code.TYPE_MISMATCH in {diagnostic.code for diagnostic in result.diagnostics}
+
+
 def test_every_registered_operator_is_covered_by_one_of_the_properties() -> None:
     """Guards the property against an operator added to the registry and never generated."""
     covered = (
         set(LEAF_PARAMS)
         | set(CALENDAR_OPS)
+        | set(CATEGORICAL_PREDICATES)
         | {"add", "subtract", "multiply", "divide", "coalesce"}
     )
     assert covered == set(registry.names()), (

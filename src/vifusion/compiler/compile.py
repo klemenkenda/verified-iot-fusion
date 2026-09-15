@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from typing import Any, Literal
 
@@ -52,6 +52,7 @@ from vifusion.dsl.schema import (
 from vifusion.hashing import hash_object
 from vifusion.temporal.calendar import TimezoneError, resolve_timezone
 from vifusion.temporal.specs import (
+    CATEGORICAL,
     CalendarFeature,
     CrossEntityAggregate,
     FeatureSpec,
@@ -122,6 +123,11 @@ class NodePlan:
     state_records: int
     batch_eligible: bool
     parity_tolerance_ulps: int
+
+    params: Mapping[str, Any] = field(default_factory=dict)
+    """Literals a node operator needs when it runs, such as the category ``equals`` compares
+    against. Source-reading nodes carry theirs inside ``spec`` instead; this is for the
+    operators that take an input rather than a stream."""
 
 
 @dataclass(frozen=True)
@@ -529,7 +535,8 @@ def _compile_source_node(
         )
         return
 
-    if operator.aggregate is not None and source.value_type != "number":
+    numeric_aggregate = operator.aggregate is not None and operator.aggregate not in CATEGORICAL
+    if numeric_aggregate and source.value_type != "number":
         compilation.reject(
             Code.AGGREGATE_OVER_CATEGORY,
             node.id,
@@ -846,6 +853,51 @@ def _compile_calendar_node(
     )
 
 
+def _node_params_are_valid(
+    node: Node, operator: registry.Operator, compilation: _Compilation
+) -> bool:
+    """Literals a node operator declares, checked before the plan records them.
+
+    A source-reading operator has its parameters validated while its spec is built; a node
+    operator has no spec, so without this its literals would reach the runtime unchecked and
+    fail there — past the compiler, which is where section 7.2 says a proposer's mistakes are
+    caught and explained back to it.
+    """
+    for name in sorted(operator.required_params):
+        if name not in node.params:
+            compilation.reject(
+                Code.MISSING_PARAMETER,
+                node.id,
+                f"operator {node.op!r} requires a {name!r} parameter",
+            )
+            return False
+
+    if "value" in operator.required_params and not isinstance(node.params.get("value"), str):
+        compilation.reject(
+            Code.SCHEMA_INVALID,
+            node.id,
+            f"{node.op!r} compares against a category, so 'value' must be a string, not "
+            f"{type(node.params.get('value')).__name__}",
+        )
+        return False
+
+    if "values" in operator.required_params:
+        values = node.params.get("values")
+        if not isinstance(values, list) or not values:
+            reason = "a non-empty list of categories"
+        elif not all(isinstance(item, str) for item in values):
+            reason = "a list of strings"
+        elif len(set(values)) != len(values):
+            reason = "a list without duplicates; membership is a set test"
+        else:
+            return True
+        compilation.reject(
+            Code.SCHEMA_INVALID, node.id, f"{node.op!r} requires 'values' to be {reason}"
+        )
+        return False
+    return True
+
+
 def _compile_arithmetic_node(
     node: Node, operator: registry.Operator, compilation: _Compilation
 ) -> None:
@@ -882,8 +934,20 @@ def _compile_arithmetic_node(
             )
             return
 
-    unit = _combine_units(operator.unit_rule, inputs[0].unit, inputs[1].unit, node.id, compilation)
+    unit: str | None
+    if operator.arity == 1:
+        # A one-input operator has nothing to combine: its output unit is its declared rule
+        # applied to the single input. `equals` and `is_in` are predicates and dimensionless
+        # whatever they read.
+        unit = DIMENSIONLESS if operator.unit_rule == "dimensionless" else inputs[0].unit
+    else:
+        unit = _combine_units(
+            operator.unit_rule, inputs[0].unit, inputs[1].unit, node.id, compilation
+        )
     if unit is None:
+        return
+
+    if not _node_params_are_valid(node, operator, compilation):
         return
 
     compilation.plans[node.id] = NodePlan(
@@ -902,6 +966,7 @@ def _compile_arithmetic_node(
             operator.batch_lowering is not None and all(plan.batch_eligible for plan in inputs)
         ),
         parity_tolerance_ulps=max(plan.parity_tolerance_ulps for plan in inputs),
+        params=dict(node.params),
     )
 
 

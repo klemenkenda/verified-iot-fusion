@@ -47,6 +47,7 @@ from vifusion.temporal.records import (
     content_signature,
 )
 from vifusion.temporal.specs import (
+    CATEGORICAL,
     TIME_AWARE,
     Aggregate,
     CalendarFeature,
@@ -370,6 +371,13 @@ class FeatureEngine:
             if in_trailing_window(record.event_time, prediction_time, spec.window)
             and record.value is not None
         ]
+        computed: float | str | None
+        if spec.aggregate in CATEGORICAL:
+            # Checked before the numeric conversion below, because these two are the
+            # aggregates defined on a category and must not be asked for a float.
+            computed = _category_aggregate(in_window, spec.aggregate)
+            return _feature(spec, computed, tuple(in_window))
+
         values: list[float] = []
         for record in in_window:
             if isinstance(record.value, str):
@@ -458,6 +466,39 @@ def _quantile(ordered: Sequence[float], level: float) -> float:
     if below >= len(ordered) - 1:
         return ordered[-1]
     return ordered[below] + (position - below) * (ordered[below + 1] - ordered[below])
+
+
+def _category_aggregate(
+    records: Sequence[CanonicalRecord], aggregate: Aggregate
+) -> float | str | None:
+    """Reductions that hold on a category as well as on a number.
+
+    Neither does arithmetic — ``mode`` counts and selects, ``distinct_count`` counts distinct
+    values — which is why these are the two aggregates a categorical stream admits. The mode's
+    return type follows the source: the mode of a category is a category.
+    """
+    if aggregate is Aggregate.DISTINCT_COUNT:
+        # Zero on an empty window, matching `count`: absence of observations is a countable
+        # fact rather than an unanswerable one.
+        return float(len({record.value for record in records}))
+
+    if not records:
+        return None
+    occurrences: dict[float | str, int] = {}
+    newest: dict[float | str, datetime] = {}
+    for record in records:
+        value = record.value
+        assert value is not None  # `_window` filtered these out
+        occurrences[value] = occurrences.get(value, 0) + 1
+        if value not in newest or record.event_time > newest[value]:
+            newest[value] = record.event_time
+    # Most occurrences wins; a later newest occurrence breaks a tie, per `specs`. The final
+    # `str` term makes the order *total*: two categories can only reach it by tying on both
+    # count and newest event time, which the archive should never produce, and a feature whose
+    # value depended on set iteration order would be non-deterministic if it ever did.
+    return max(
+        occurrences, key=lambda value: (occurrences[value], newest[value], str(value))
+    )
 
 
 def _time_aggregate(

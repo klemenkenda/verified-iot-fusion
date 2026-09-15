@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from vifusion.compiler.compile import EntityGraphs, ExecutionPlan, related_spec_name
-from vifusion.runtime.arithmetic import combine
+from vifusion.runtime.arithmetic import apply_unary, combine
 from vifusion.temporal.engine import reduce_related
 from vifusion.temporal.late_data import LateArrivalPolicy, apply_late_records
 from vifusion.temporal.records import CanonicalRecord
@@ -204,6 +204,11 @@ def _fold(
             values[node_id] = reduce_related(node_id, node.spec.aggregate, shadows)
             continue
         if node.spec is not None:
+            continue
+        if len(node.inputs) == 1:
+            values[node_id] = apply_unary(
+                node_id, node.op, values[node.inputs[0]], node.params
+            )
             continue
         left, right = (values[name] for name in node.inputs)
         values[node_id] = combine(node_id, node.op, left, right)

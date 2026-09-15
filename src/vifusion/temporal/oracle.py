@@ -37,6 +37,7 @@ from vifusion.temporal.boundaries import (
 )
 from vifusion.temporal.records import CanonicalRecord, RecordKind, deduplicate
 from vifusion.temporal.specs import (
+    CATEGORICAL,
     TIME_AWARE,
     Aggregate,
     CalendarFeature,
@@ -224,6 +225,36 @@ def _order_statistic(values: Sequence[float], aggregate: Aggregate) -> float:
     return _quantile(values, _LEVELS[aggregate])
 
 
+def _category_aggregate(
+    records: Sequence[CanonicalRecord], aggregate: Aggregate
+) -> float | str | None:
+    """The two aggregates a category admits, recomputed from the window with no state.
+
+    Sorts rather than tallies in one pass: a mode found by grouping a sorted list and a mode
+    found by accumulating a dictionary fail differently, which is the independence this module
+    owes the engine.
+    """
+    values = [record.value for record in records if record.value is not None]
+    if aggregate is Aggregate.DISTINCT_COUNT:
+        return float(len(set(values)))
+    if not records:
+        return None
+
+    newest: dict[float | str, datetime] = {}
+    for record in records:
+        if record.value is None:
+            continue
+        seen = newest.get(record.value)
+        if seen is None or record.event_time > seen:
+            newest[record.value] = record.event_time
+    # `str` last, for the reason given in the engine: `set` iteration order is not stable
+    # across processes, so the comparison has to be total rather than nearly so.
+    ordered = sorted(
+        set(values), key=lambda value: (values.count(value), newest[value], str(value))
+    )
+    return ordered[-1] if ordered else None
+
+
 def _time_aggregate(
     records: Sequence[CanonicalRecord], aggregate: Aggregate, prediction_time: datetime
 ) -> float | None:
@@ -282,6 +313,8 @@ def _window_aggregate(
         if in_trailing_window(record.event_time, prediction_time, spec.window)
     ]
     contributors = _observations(in_window)
+    if spec.aggregate in CATEGORICAL:
+        return _value(spec, _category_aggregate(contributors, spec.aggregate), contributors)
     if spec.aggregate in TIME_AWARE:
         _numbers(contributors)  # same categorical rejection the value-only path performs
         computed = _time_aggregate(contributors, spec.aggregate, prediction_time)
