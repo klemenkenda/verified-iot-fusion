@@ -133,7 +133,13 @@ selects and interpolates once, and the median absolute deviation selects, subtra
 elementwise, then selects again. Nothing in either is a sum, so there is no summation order
 for two implementations to disagree about. ``slope`` is the opposite case and carries the
 widest budget here: it sums products of centred deviations, which is the operation these
-tolerances exist for.
+tolerances exist for. Its 32 was set by measurement rather than guessed — across twenty
+thousand random windows spanning six decades of value scale, offset and drift, the three
+implementations never disagreed by more than the criterion allows. Be careful re-measuring it
+in *relative* ulps alone: where a series has a large offset and no real trend, the centred
+values cancel, the slope is ~1e-17, and two correct answers can sit thousands of ulps apart
+while agreeing to 1e-18 in absolute terms. That is why the parity check pairs its relative
+budget with an absolute floor.
 
 Declared here and moved into the operator registry in Phase 3, where the compiler owns it
 and the artifact reports it.

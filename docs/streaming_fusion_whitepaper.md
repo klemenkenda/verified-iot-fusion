@@ -3,7 +3,7 @@
 **How heterogeneous IoT streams become a verified feature vector**
 
 *A technical whitepaper for the `verified-iot-fusion` artifact.*
-Revision 2026-09-14 · 16 figures · plan of record: [docs/research_plan.md](research_plan.md)
+Revision 2026-09-15 · 16 figures · plan of record: [docs/research_plan.md](research_plan.md)
 
 ---
 
@@ -539,19 +539,80 @@ Durations are text (`"24h"`, `"30m"`), not seconds, for a specific reason: a mod
 
 [dsl/registry.py](../src/vifusion/dsl/registry.py) declares every operator's input types,
 output type, unit rule, time direction, null policy, state behaviour, batch lowering and
-parity budget. It is kept deliberately small — the tension between *a DSL too weak to express
-useful features* and *a DSL too permissive for verification to stay reliable* is resolved by
-admitting operators only from documented failure analysis.
+parity budget. It is kept small — the tension between *a DSL too weak to express useful
+features* and *a DSL too permissive for verification to stay reliable* is resolved by admitting
+operators only from documented failure analysis, and every addition enlarges the surface the
+correctness claim has to cover.
+
+What the registry is *not* is an experimental parameter. A search draws from the operator set
+its task declares, not from whatever the registry happens to contain, so registering an
+operator changes what the software can express and changes no recorded result. The two were the
+same variable until 2026-09-15, which had the effect of making every library improvement a
+protocol decision — and had left operators the plan of record specifies unimplemented.
 
 | Family | Operators | Reads | State |
 |---|---|---|---|
 | Point reads | `last` (± `max_staleness`), `lag`, `staleness` | newest / exact event-time match | 1 record, or the lag window |
-| Window aggregates | `count` `sum` `mean` `variance` `stddev` `min` `max` | trailing `(t-w, t]` | retained raw window |
+| Window aggregates | `count` `sum` `mean` `variance` `stddev` `min` `max` `median` `p25` `p75` `iqr` `mad` | trailing `(t-w, t]` | retained raw window |
+| Window trend and timing | `slope` `time_since_max` `time_since_min` | trailing window, reading event times as well as values | retained raw window |
 | Data quality | `missing_count` | trailing window vs declared cadence | retained raw window |
 | Forecast | `forecast` (lead + revision policy) | eligible issues for `t + lead` | one entry per reachable valid time |
 | Calendar | `hour_of_day` … `day_after_holiday` | **nothing** — pure function of `t` | none |
 | Cross-entity | `cross_entity_mean` | latest value on each related entity | one record per related entity |
 | Arithmetic | `add` `subtract` `multiply` `divide` `coalesce` | other nodes | none |
+
+#### The fifteen window aggregates
+
+Every one of these reduces the same thing — the raw records retained for the trailing window
+`(t - w, t]` — and every one is exact over that window. They differ only in what they reduce it
+to, and in whether they read event times as well as values.
+
+| Aggregate | Returns | Output unit | Parity |
+|---|---|---|---|
+| `count` | observations present | dimensionless | exact |
+| `sum` | total | preserved | 4 ulp |
+| `mean` | arithmetic mean | preserved | 4 ulp |
+| `variance` | **sample** variance, `n-1`, null below two observations | unit² | 16 ulp |
+| `stddev` | square root of the above | preserved | 16 ulp |
+| `min` / `max` | extremes | preserved | exact |
+| `median` | `q = 0.5`, interpolated | preserved | exact |
+| `p25` / `p75` | first and third quartiles | preserved | exact |
+| `iqr` | `p75 - p25` | preserved | exact |
+| `mad` | `median(abs(x - median(x)))`, **unscaled** | preserved | exact |
+| `slope` | least-squares trend of value on event time | unit **per second** | 32 ulp |
+| `time_since_max` / `time_since_min` | seconds back to the extremum | seconds | exact |
+
+Four conventions are fixed once and shared by all three implementations, because a convention
+two implementations chose differently would make the differential suite measure the convention
+instead of the code:
+
+* **Quantiles interpolate linearly** between order statistics at `h = (n-1)q` — NumPy's default
+  and R's type 7. The median is `q = 0.5` under the same rule, so at even counts it is the
+  midpoint of the two central values rather than the lower of them.
+* **`mad` is unscaled.** No `1.4826` factor: the scaled form estimates a normal distribution's
+  σ, and applying it here would bury a normality assumption inside an operator that otherwise
+  reports a plain unit-preserving spread.
+* **`slope` is a rate**, reported per second and given its own unit rule so that a trend cannot
+  compile to the units of a level. It is null below two observations, and null when every
+  observation in the window shares one event time — a vertical line is not a steep one.
+* **Ties in `time_since_*` go to the most recent occurrence.** "How long since the peak" means
+  the latest peak. This is the likeliest place three implementations drift apart, because the
+  natural spellings of `max` and `min` break ties in opposite directions.
+
+Note what the parity column says: **the order statistics are exact, and the moments are not.**
+That inverts the usual expectation, and the reason is structural. A quantile selects and
+interpolates once; `mad` selects, subtracts elementwise, then selects again. Neither contains a
+sum, so there is no summation order for two implementations to disagree about. `mean` and
+`variance` do contain one, and a one-pass Welford update genuinely disagrees in the last bits
+with a two-pass `math.fsum`. `slope` carries the widest budget in the system for the same
+reason, sized by measurement rather than guessed.
+
+The order statistics also cost **no state that the moments do not already cost**. The usual
+objection to a streaming median — that it needs unbounded memory or an approximate sketch —
+does not apply, because the decision to exclude sketches already requires the whole window to
+be materialised before it is reduced. A median is therefore the same memory as a mean. The set
+that existed before 2026-09-15 was the set expressible as a *constant-space accumulator*, which
+was never a constraint this system was under.
 
 Three constraints are structural rather than remembered:
 
@@ -562,13 +623,19 @@ Three constraints are structural rather than remembered:
 * **Parity tolerance is per operator and declared up front**, so it cannot be widened later
   under schedule pressure.
 
-Two entries deserve notes. `lag` is **exact by event time** — no nearest-neighbour fallback,
+Three entries deserve notes. `lag` is **exact by event time** — no nearest-neighbour fallback,
 because an approximate match would make the operator's semantics depend on the sampling grid.
 And `coalesce` was added from measured failure: on Beijing, the 24-hour lag is null at every
 one of the twelve stations (1.3%–6.3% of validation prediction times), so a seasonal-naive
 floor was literally unwritable and the task fell back to a materially weaker persistence
 baseline. `coalesce` is *selection*, not imputation — it reports the lineage of whichever
-input answered, so a reader can still see which expression produced the number.
+input answered, so a reader can still see which expression produced the number. The quantiles,
+`slope`, `mad` and the two `time_since` operators arrived on 2026-09-15 from a different kind
+of failure — a failure to implement the plan. Exact quantiles and a trailing slope are named in
+the plan of record as operators the first implementation should support, and had simply been
+left out; `mad` and the `time_since` pair came with them as the reductions unreachable by
+composing what already existed, being a spread around the median and *when* within a window an
+extremum fell, which `min` and `max` discard.
 
 ### 5.2 The nine compiler stages
 
@@ -883,9 +950,21 @@ disagreement is the declared parity budget:
 | Operator | Parity | Budget |
 |---|---|---|
 | `count`, `min`, `max` | exact | 0 ulp — these are selections, not arithmetic |
+| `median`, `p25`, `p75`, `iqr`, `mad` | exact | 0 ulp — selection plus at most one interpolation |
+| `time_since_max`, `time_since_min` | exact | 0 ulp — a selection and one subtraction |
 | `sum`, `mean` | tolerance | 4 ulp |
 | `variance`, `stddev` | tolerance | 16 ulp |
+| `slope` | tolerance | 32 ulp |
 | arithmetic, calendar | exact | shared implementation |
+
+`slope`'s budget was set by measurement, not chosen: across twenty thousand random windows
+spanning six decades of value scale, offset and drift, the three implementations never
+disagreed by more than the criterion allows. It is worth knowing how to re-measure it. In
+*relative* ulps alone the worst case looks like 2641 — but that regime is a series with a large
+offset and no real trend, where the centred values cancel, the slope is ~1e-17, and two correct
+answers sit thousands of ulps apart while agreeing to 1e-18 in absolute terms. This is why the
+parity check pairs its relative budget with an absolute floor, and why a relative-only
+comparison is the wrong instrument for an operator whose correct answer is often zero.
 
 **Lineage, eligibility decisions, and accept/reject outcomes are compared exactly.** They are
 discrete and admit no tolerance. Declaring the numeric budgets up front is what stops them
@@ -1178,7 +1257,12 @@ That last paragraph is the argument for measuring rather than asserting, in mini
   [docs/compatibility.md](compatibility.md). An EMA has unbounded reach, so it does not admit
   the exact-over-a-retained-window treatment every other aggregate gets.
 * **No approximate sketches.** A deliberate cost: exactness is what makes parity testable as
-  an equality.
+  an equality. It is also what makes the order statistics affordable — the window is already
+  materialised, so a median costs what a mean costs.
+* **Aggregates are numeric only.** A categorical stream can be read by `last` and by nothing
+  else: there is no `mode`, no distinct count, no categorical equality or membership, though
+  the plan of record specifies the last of these. Beijing ships wind direction as a category,
+  and a wind-direction feature over a window is currently inexpressible.
 * **The `inferred` availability model raises.** No committed dataset needs it, and
   implementing a model nothing routes through is how an unused guess ends up in a result.
 * **Simulated availability is an assumption, and is labelled one.** Beijing's delays are

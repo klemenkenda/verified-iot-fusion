@@ -123,7 +123,7 @@ def test_opting_in_to_a_new_operator_is_what_widens_the_space(
     candidates = enumerate_candidates(UPDATE_SOURCES, widened)
 
     assert "median" in {candidate.op for candidate in candidates}
-    assert widened.omitted_operators() == ()
+    assert "median" not in widened.omitted_operators()
     assert "median" in widened.as_dict()["operators"], "the manifest must record the widening"
 
 

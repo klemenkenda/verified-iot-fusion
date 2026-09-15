@@ -29,14 +29,25 @@ SearchSpace` names the operators it draws from, and an operator registered here 
 every existing experiment until a task config asks for it. So the argument for keeping this set
 small is the one stated above and only that one — every operator enlarges the surface the
 correctness claim must cover and the volume of generated code a reviewer must read — and no
-longer includes any concern about disturbing a banked result. Note also that "exact over a
-retained window" means the engine materialises the window before reducing it, so an order
-statistic costs the state a mean already costs; the set below is the set expressible as a
-constant-space accumulator, which was never the criterion this module claimed to apply.
+longer includes any concern about disturbing a banked result.
 
 **Additions, with the failure analysis that earned them** — section 5.3 admits an operator only
 from a documented failure, so each one is named here:
 
+* ``median``, ``p25``, ``p75``, ``iqr``, ``mad``, ``slope``, ``time_since_max`` and
+  ``time_since_min`` (2026-09-15). Not a failure in the field but a **failure to implement the
+  plan**: section 5.3 names exact quantiles and a trailing slope among the operators the first
+  implementation should support, and they had been left out. The reason they were left out is
+  worth recording, because it was never a stated criterion — the implemented set was exactly
+  the set expressible as a *constant-space accumulator*, and an order statistic is not one.
+  That test does not apply here. "Exact over a retained window" means the engine materialises
+  the whole window before reducing it, so a median costs the state a mean already costs; the
+  memory argument section 5.3 makes for exact quantiles was already settled in their favour.
+  ``mad`` and the two ``time_since`` operators come with them as the reductions that are
+  unreachable by composition: a spread around the median, and *when* within the window an
+  extremum fell, which ``min`` and ``max`` discard. ``iqr`` and ``range`` are both expressible
+  as a ``subtract`` of two leaves; ``iqr`` is registered anyway because the composition costs
+  two extra nodes and two extra window scans for a quantity that is one reduction.
 * ``coalesce`` (2026-09-11). A naive seasonal floor is *unwritable* without it on any series
   with gaps: ``lag`` is exact by construction and returns null wherever the hour it addresses
   is missing, ``last`` ignores the lag entirely, and there was no third thing to say. Measured

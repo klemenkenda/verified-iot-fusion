@@ -2571,3 +2571,49 @@ Enefit0   M3/ridge    -0.0852    -0.0852    -0.0852    -0.0852    0.0000    0.00
 - **Phase / gate:** Phase 6 — unblocks operator work that section 5.3 specifies and the registry
   has not yet implemented (exact quantile, trailing slope, categorical equality and membership),
   which was waiting on a protocol question it no longer has to answer.
+
+### 2026-09-15 — Exact quantiles, a trailing slope, and the timing of extrema
+
+- **Decision:** Registered eight trailing-window aggregates: `median`, `p25`, `p75`, `iqr`,
+  `mad`, `slope`, `time_since_max`, `time_since_min`. The first five reduce a bag of numbers and
+  carry a parity tolerance of **zero**; `slope` carries 32 ulps; the two `time_since` operators
+  are selections and are exact. `slope` introduced a `per_second` unit rule, so a trend compiles
+  to the source's unit divided by a second. All eight are implemented three times over — engine,
+  batch lowering, oracle — as the differential suite requires, and all eight are **absent from
+  every task's search space** until a config declares them under `operators`.
+- **Alternatives considered:** (1) A single parameterised `quantile` operator with a `level`
+  parameter — rejected for now: `Aggregate` is a bare enum, a level would have to reach it
+  through `WindowAggregate` and `PARAMETER_GRIDS`, and three discrete levels cover the use
+  without that. Worth revisiting if a task wants deciles. (2) Leaving `iqr` and `range` to
+  composition via `subtract` — `range` was left to composition, `iqr` was not: the composition
+  costs two extra nodes and two extra window scans for one reduction. (3) Scaling `mad` by
+  1.4826 to estimate sigma — rejected, it buries a normality assumption inside a
+  unit-preserving spread; a model that wants it can multiply by a constant. (4) Skew and
+  kurtosis — declined: numerically nasty, and neither has a use here that the order statistics
+  do not serve better.
+- **Rationale:** Section 5.3 names exact quantiles and a trailing slope among the operators the
+  first implementation should support, and they had never been written. The reason they had not
+  is the finding worth recording: the implemented set was exactly the set expressible as a
+  *constant-space accumulator*, which is a criterion section 5.3 never states. Because the plan
+  excludes approximate sketches, the engine already materialises the whole window before
+  reducing it — so a median costs the state a mean costs, and the memory objection that would
+  normally block order statistics in a streaming system does not apply here. `mad`,
+  `time_since_max` and `time_since_min` were added alongside as the reductions unreachable by
+  composing what already existed: a spread around the median, and *when* within the window an
+  extremum fell, which `min` and `max` discard. The work was possible as a pure library change
+  only because of the decoupling recorded in the entry above.
+- **Affected experiments / artifacts:** None. `FROZEN_V1_OPERATORS` was deliberately left at its
+  twenty-seven names, so every recorded baseline searches the space it always did; the full
+  suite confirms the enumerated candidate count and operator distribution are unchanged. Using
+  the new operators in an experiment is a separate, declared decision.
+- **Made before or after viewing test results:** not applicable — no score moves. The slope
+  tolerance of 32 ulps was set by measurement before the operator was registered: across twenty
+  thousand random windows spanning six decades of value scale, offset and drift, the three
+  implementations never disagreed by more than the parity criterion allows. A caution is
+  recorded in `temporal/specs.py`: measured in *relative* ulps alone the worst case looks like
+  2641, but that regime is a large offset with no real trend, where the slope is ~1e-17 and two
+  correct answers agree to 1e-18 in absolute terms. The parity check pairs a relative budget
+  with an absolute floor for exactly this reason.
+- **Phase / gate:** Phase 6 — closes the section 5.3 gap for numeric operators. Categorical
+  equality and membership remain specified and unimplemented; Beijing's wind direction is still
+  readable only by `last`.

@@ -92,12 +92,20 @@ PROGRAM: dict[str, Any] = {
         {"id": "hi", "op": "max", "params": {"source": "s1", "feature": "temp", "window": "3h"}},
         # The order statistics and the trend, added 2026-09-15. Each runs over the same window
         # as the moments above so that a disagreement isolates the aggregate, not the window.
-        {"id": "med", "op": "median", "params": {"source": "s1", "feature": "temp", "window": "3h"}},
+        {
+            "id": "med",
+            "op": "median",
+            "params": {"source": "s1", "feature": "temp", "window": "3h"},
+        },
         {"id": "q1", "op": "p25", "params": {"source": "s1", "feature": "temp", "window": "3h"}},
         {"id": "q3", "op": "p75", "params": {"source": "s1", "feature": "temp", "window": "3h"}},
         {"id": "spr", "op": "iqr", "params": {"source": "s1", "feature": "temp", "window": "3h"}},
         {"id": "dev", "op": "mad", "params": {"source": "s1", "feature": "temp", "window": "3h"}},
-        {"id": "trend", "op": "slope", "params": {"source": "s1", "feature": "temp", "window": "3h"}},
+        {
+            "id": "trend",
+            "op": "slope",
+            "params": {"source": "s1", "feature": "temp", "window": "3h"},
+        },
         {
             "id": "since_hi",
             "op": "time_since_max",
