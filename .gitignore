@@ -35,6 +35,7 @@ dist/
 .hypothesis/
 .coverage
 htmlcov/
+docs/*.pdf
 
 # Editors and OS
 .DS_Store
