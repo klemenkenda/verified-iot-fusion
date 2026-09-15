@@ -1,0 +1,98 @@
+# Reproduction of the 24-hour PM2.5 result of arXiv 2607.07279, for the Phase 6 task
+# "reproduce at least one published or competition-quality reference result where feasible".
+#
+# **This is not a Gate B task and produces no number this project reports about itself.** Its
+# only purpose is to place a figure from this engine beside a published figure computed under a
+# stated protocol, so that the baselines' credibility rests on an external comparison rather
+# than on internal plausibility alone. `beijing_pm25_24h` remains the Beijing task of record.
+#
+# What the reference reports at 24 hours, over all twelve stations pooled:
+#
+#     model            RMSE      MAE      R2    vs persistence
+#     persistence    98.151   65.172  -0.117         --
+#     Ridge          81.872   56.729   0.223      -16.6% RMSE
+#     Elastic Net    80.829   57.127   0.242      -17.7%
+#     XGBoost        82.660   56.365   0.208      -15.8%
+#
+# Matched here: the 70/15/15 chronological split (`beijing_reproduction`), all twelve stations
+# pooled into one fit, the 24-hour horizon, the persistence definition — "the current PM2.5
+# value" at t predicting t+24, which is exactly this project's M0 — and the feature design of
+# `beijing_reproduction.yaml` as far as the DSL allows.
+#
+# **Availability is the deliberate difference, and `prompt` is the closest match.** The
+# reference states that its "meteorological inputs are observed origin-time values" and concedes
+# that "an operational 24-hour deployment would substitute weather forecasts" — that is, it
+# assumes everything measured at t is usable at t. The `prompt` scenario declares exactly that
+# for pollutants and meteorology. It is still labelled simulated, because a delay of zero is an
+# assumption like any other. Running this same file under `typical` prices what the availability
+# discipline costs against a literature that mostly does not apply one; that is a separate
+# experiment and a separate run, not a correction to this one.
+#
+# Four deviations are unavoidable and are set out in the program header: no station indicators,
+# no wind direction, no sine/cosine calendar terms, and no median imputation with per-feature
+# binary missingness flags. Predictors also differ — the reference reports Ridge, Elastic Net
+# and XGBoost; this grid is ridge and LightGBM, so ridge is a like-for-like comparison and
+# LightGBM stands in for XGBoost. Every one of these moves the comparison in a knowable
+# direction and none is tuned after the fact.
+#
+# **This task scores on the reserved Beijing test fold**, by the decision recorded 2026-09-14.
+# See the split file for why scoring anywhere else would not be a reproduction.
+schema_version: "0.1.0"
+name: beijing_pm25_24h_reproduction
+
+dataset: beijing
+root: data/raw/beijing
+options:
+  # Zero pollutant and meteorology delay: the declared scenario closest to the reference's use
+  # of observed origin-time values. See the header.
+  arrival: prompt
+
+target_source: beijing_target
+target_feature: pm2_5
+horizon: PT24H
+prediction_interval: PT1H
+
+split: beijing_reproduction
+
+# All twelve. The reference fits one pooled model over the whole network; the Gate B task runs
+# one station precisely because a pooled panel measures pooling, and the measurement that makes
+# pooling acceptable *here* is in the program header — 1.31x between-station spread against
+# Enefit's 25.4x.
+entities:
+  - Aotizhongxin
+  - Changping
+  - Dingling
+  - Dongsi
+  - Guanyuan
+  - Gucheng
+  - Huairou
+  - Nongzhanguan
+  - Shunyi
+  - Tiantan
+  - Wanliu
+  - Wanshouxigong
+
+predictors: [ridge, lightgbm]
+
+methods:
+  - id: M0
+    program: configs/programs/beijing_m0_naive.yaml
+    predictor: identity
+    output: persistence
+    description: >-
+      The reference's baseline, which it defines at 24 hours as "the current PM2.5 value" used
+      unchanged to predict t+24. That is this project's persistence floor exactly, so the two
+      are directly comparable and M0 is the single most informative line in the table: if the
+      floors agree, the split and the pooling are right, and any difference in the fitted rows
+      is about features and models rather than about protocol.
+
+  - id: Mrep
+    program: configs/programs/beijing_reproduction.yaml
+    description: >-
+      The reference's feature design, expressed in the DSL as closely as it allows: seven PM2.5
+      lags, two rolling means, five co-pollutants, five numeric meteorological variables,
+      staleness and gap counts standing in for its missingness indicators, and raw hour and
+      month. Twenty-five features against the reference's eighty-two, the bulk of that gap
+      being its per-feature binary missingness flags, its sixteen wind-direction levels and its
+      twelve station indicators. Compared under ridge against the reference's Ridge, and under
+      LightGBM against its XGBoost.

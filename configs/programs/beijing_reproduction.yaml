@@ -1,0 +1,246 @@
+# The feature design of arXiv 2607.07279, expressed in this DSL as closely as it allows.
+#
+# The reference states its h>0 design as: PM2.5 lags at 1, 3, 6, 12, 24, 48 and 72 hours;
+# rolling means over the preceding 6 and 24 hours; five co-pollutants; five meteorological
+# variables; wind direction; station indicators; hour and month as sine and cosine terms; and a
+# binary missingness indicator for every lagged and meteorological feature — 82 features in all.
+#
+# Four of those groups cannot be expressed here, and each is a real deviation rather than an
+# oversight. They are listed in the comparison and must be read with any delta:
+#
+#   1. **Station indicators.** The runtime fits one model across every entity a task names and
+#      nothing in the feature vector says which entity a row came from. This is the same missing
+#      capability that blocks the Enefit reference result. It matters far less here: the twelve
+#      stations' mean PM2.5 spans 65.99 to 86.19 ug/m3, a factor of 1.31 with a coefficient of
+#      variation of 0.086, against the 25.4x spread that made the Enefit panel run measure
+#      pooling damage. A station indicator earns little when within-station variance is this
+#      much larger than between-station variance, but the reference carries them and we do not.
+#   2. **Wind direction.** A `category` node compiles and computes correctly and is then dropped
+#      by the evaluation layer, which replaces every string with null before fitting. That is the
+#      defect recorded 2026-09-11 and deliberately left for the Gate C encoding decision. The
+#      reference one-hot encodes sixteen compass labels; we carry none of them.
+#   3. **Sine and cosine calendar terms.** The registry has no trigonometric operator, and
+#      adding one after seeing results would be a post-hoc registry change of exactly the kind
+#      section 9.4 forbids. `hour_of_day` and `month_of_year` are carried raw instead. A tree
+#      splits on them happily; for ridge this is a genuine handicap, since the response to hour
+#      is cyclic and a raw hour index is linear in it.
+#   4. **Per-feature binary missingness indicators with median imputation.** The reference
+#      imputes with a training-fold median and retains a binary indicator per feature. This
+#      engine has null policies rather than an imputer. `staleness` and `missing_count` are the
+#      nearest available statements of the same information and are carried for PM2.5 and for
+#      the meteorological group, but they are counts and ages rather than per-feature binary
+#      flags, and there is no imputation step at all.
+#
+# What is reproduced faithfully: the lag set, both rolling windows, all five co-pollutants, all
+# five numeric meteorological variables, the 24-hour horizon, and the pooled twelve-station fit.
+#
+# PM2.5 history is read from `beijing_air`, not from the target source. The station
+# publishes the quantity on an ordinary measurement stream, so no label source is needed and the
+# rule of 2026-09-11 does not have to be invoked.
+schema_version: "0.1.0"
+name: beijing_reproduction
+
+sources:
+  - source_id: beijing_air
+    feature_name: pm2_5
+    kind: measurement
+    value_type: number
+    unit: microgram / meter ** 3
+    max_input_rate_per_hour: 4
+    description: Fine particulates at the station.
+
+  - source_id: beijing_air
+    feature_name: pm10
+    kind: measurement
+    value_type: number
+    unit: microgram / meter ** 3
+    max_input_rate_per_hour: 4
+    description: Coarse particulates.
+
+  - source_id: beijing_air
+    feature_name: so2
+    kind: measurement
+    value_type: number
+    unit: microgram / meter ** 3
+    max_input_rate_per_hour: 4
+    description: Sulphur dioxide.
+
+  - source_id: beijing_air
+    feature_name: no2
+    kind: measurement
+    value_type: number
+    unit: microgram / meter ** 3
+    max_input_rate_per_hour: 4
+    description: Nitrogen dioxide.
+
+  - source_id: beijing_air
+    feature_name: co
+    kind: measurement
+    value_type: number
+    unit: microgram / meter ** 3
+    max_input_rate_per_hour: 4
+    description: Carbon monoxide.
+
+  - source_id: beijing_air
+    feature_name: o3
+    kind: measurement
+    value_type: number
+    unit: microgram / meter ** 3
+    max_input_rate_per_hour: 4
+    description: Ozone.
+
+  - source_id: beijing_air
+    feature_name: temp
+    kind: measurement
+    value_type: number
+    unit: degC
+    max_input_rate_per_hour: 4
+    description: Air temperature.
+
+  - source_id: beijing_air
+    feature_name: pres
+    kind: measurement
+    value_type: number
+    unit: hectopascal
+    max_input_rate_per_hour: 4
+    description: Barometric pressure.
+
+  - source_id: beijing_air
+    feature_name: dewp
+    kind: measurement
+    value_type: number
+    unit: degC
+    max_input_rate_per_hour: 4
+    description: Dew point.
+
+  - source_id: beijing_air
+    feature_name: rain
+    kind: measurement
+    value_type: number
+    unit: mm
+    max_input_rate_per_hour: 4
+    description: Precipitation.
+
+  - source_id: beijing_air
+    feature_name: wspm
+    kind: measurement
+    value_type: number
+    unit: meter / second
+    max_input_rate_per_hour: 4
+    description: Wind speed.
+
+nodes:
+  # The reference's lag set, exactly.
+  - id: pm25_now
+    op: last
+    params: {source: beijing_air, feature: pm2_5}
+  - id: pm25_lag_1h
+    op: lag
+    params: {source: beijing_air, feature: pm2_5, lag: 1h}
+  - id: pm25_lag_3h
+    op: lag
+    params: {source: beijing_air, feature: pm2_5, lag: 3h}
+  - id: pm25_lag_6h
+    op: lag
+    params: {source: beijing_air, feature: pm2_5, lag: 6h}
+  - id: pm25_lag_12h
+    op: lag
+    params: {source: beijing_air, feature: pm2_5, lag: 12h}
+  - id: pm25_lag_24h
+    op: lag
+    params: {source: beijing_air, feature: pm2_5, lag: 24h}
+  - id: pm25_lag_48h
+    op: lag
+    params: {source: beijing_air, feature: pm2_5, lag: 48h}
+  - id: pm25_lag_72h
+    op: lag
+    params: {source: beijing_air, feature: pm2_5, lag: 72h}
+
+  # "Rolling means use the preceding 6 and 24 hours."
+  - id: pm25_mean_6h
+    op: mean
+    params: {source: beijing_air, feature: pm2_5, window: 6h}
+  - id: pm25_mean_24h
+    op: mean
+    params: {source: beijing_air, feature: pm2_5, window: 24h}
+
+  # Five co-pollutants.
+  - id: pm10_now
+    op: last
+    params: {source: beijing_air, feature: pm10}
+  - id: so2_now
+    op: last
+    params: {source: beijing_air, feature: so2}
+  - id: no2_now
+    op: last
+    params: {source: beijing_air, feature: no2}
+  - id: co_now
+    op: last
+    params: {source: beijing_air, feature: co}
+  - id: o3_now
+    op: last
+    params: {source: beijing_air, feature: o3}
+
+  # Five numeric meteorological variables. Wind direction is the sixth and is not expressible;
+  # see the header.
+  - id: temp_now
+    op: last
+    params: {source: beijing_air, feature: temp}
+  - id: pres_now
+    op: last
+    params: {source: beijing_air, feature: pres}
+  - id: dewp_now
+    op: last
+    params: {source: beijing_air, feature: dewp}
+  - id: rain_now
+    op: last
+    params: {source: beijing_air, feature: rain}
+  - id: wspm_now
+    op: last
+    params: {source: beijing_air, feature: wspm}
+
+  # Nearest available statement of the reference's missingness indicators.
+  - id: pm25_staleness
+    op: staleness
+    params: {source: beijing_air, feature: pm2_5}
+  - id: pm25_missing_24h
+    op: missing_count
+    params: {source: beijing_air, feature: pm2_5, expected_interval: 1h, window: 24h}
+  - id: temp_missing_24h
+    op: missing_count
+    params: {source: beijing_air, feature: temp, expected_interval: 1h, window: 24h}
+
+  # "hour and month ... represented by sine and cosine terms" — carried raw; see the header.
+  - id: hour
+    op: hour_of_day
+    params: {timezone: Asia/Shanghai}
+  - id: month
+    op: month_of_year
+    params: {timezone: Asia/Shanghai}
+
+outputs:
+  - pm25_now
+  - pm25_lag_1h
+  - pm25_lag_3h
+  - pm25_lag_6h
+  - pm25_lag_12h
+  - pm25_lag_24h
+  - pm25_lag_48h
+  - pm25_lag_72h
+  - pm25_mean_6h
+  - pm25_mean_24h
+  - pm10_now
+  - so2_now
+  - no2_now
+  - co_now
+  - o3_now
+  - temp_now
+  - pres_now
+  - dewp_now
+  - rain_now
+  - wspm_now
+  - pm25_staleness
+  - pm25_missing_24h
+  - temp_missing_24h
+  - hour
+  - month

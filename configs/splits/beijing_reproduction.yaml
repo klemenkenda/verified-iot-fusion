@@ -1,0 +1,62 @@
+# Split reproducing the protocol of the Beijing multi-horizon PM2.5 study (arXiv 2607.07279).
+#
+# This is NOT the Gate B split. `beijing_transfer` is, and it stays authoritative for every
+# result this project reports about itself. This file exists for one purpose: to score against
+# a published number under that paper's own partitioning, so the comparison is a reproduction
+# rather than two figures computed over different periods.
+#
+# **It spends the Beijing test fold, by a decision taken 2026-09-14 and recorded in the
+# decision log.** The published test block is the last 15% of the dataset, which contains
+# essentially all of `beijing_transfer`'s reserved test period. Scoring anywhere else would put
+# our figures in spring and summer against their winter-containing block, and PM2.5 seasonality
+# is large enough that the absolute RMSE and MAE would stop being comparable — which is most of
+# the point. The reservation is therefore spent deliberately, on this external-validity check,
+# and Beijing's test fold is not available for H1. USCRN and Enefit are untouched.
+#
+# **Boundaries are derived, not transcribed.** The paper gives percentages and a date range, not
+# dates: "70% training, 15% calibration, and 15% final test blocks" over 1 March 2013 to 28
+# February 2017, that being 1,461 days. 70% is 1,023 days, ending 2015-12-19; a further 15% is
+# 219 days, ending 2016-07-25. Any rounding difference against the authors' own boundaries is a
+# source of discrepancy and is named as such in the comparison rather than tuned away.
+#
+# **No embargo, deliberately.** `beijing_transfer` carries `gap: P7D` because a 24-hour target
+# constructed near a boundary can otherwise draw features from across it. This file sets no gap
+# because the paper declares none, and an embargo we added would move our numbers away from
+# theirs for a reason they never applied. It is a fidelity choice, not an endorsement.
+#
+# **All twelve stations, none held out.** The reference fits one pooled model over all twelve;
+# `beijing_transfer` withholds Changping and Dingling for the section 8.4 transfer evaluation.
+# Reproducing a pooled result means those two are in.
+schema_version: "0.1.0"
+name: beijing_reproduction
+dataset: beijing_multi_site_air_quality
+version: uci-501
+
+gap: P0D
+
+train:
+  start: "2013-03-01T00:00:00+08:00"
+  end: "2015-12-19T00:00:00+08:00"
+validation:
+  start: "2015-12-19T00:00:00+08:00"
+  end: "2016-07-25T00:00:00+08:00"
+test:
+  start: "2016-07-25T00:00:00+08:00"
+  end: "2017-03-01T00:00:00+08:00"
+
+held_out_entities: []
+
+rationale: >-
+  Boundaries are stated in Asia/Shanghai for the same reason beijing_transfer states them that
+  way: the dataset's year/month/day/hour columns are local time, and a boundary written in UTC
+  would fall in the middle of a local day for no reason a reader could see. The three blocks
+  reproduce a published 70/15/15 chronological partition so that a number computed here can be
+  set beside a number computed there.
+
+notes:
+  - "Availability in this dataset is simulated. The reproduction runs under the `prompt`
+     scenario, whose zero pollutant and meteorology delay is the closest declared match to the
+     reference's stated use of observed origin-time values. A run under `typical` prices what
+     the availability discipline costs and is a different experiment, not a correction."
+  - "This split scores on the reserved Beijing test period by explicit decision. Do not reuse it
+     for an H1 comparison."
