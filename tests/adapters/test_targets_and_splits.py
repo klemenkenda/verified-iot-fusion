@@ -98,6 +98,7 @@ def test_beijing_target_shares_its_quantity_with_a_readable_stream(
 # --- programs agree with the adapters ---------------------------------------------------------
 
 
+@pytest.mark.experiment
 @pytest.mark.parametrize(
     ("program_file", "schemas"),
     [
@@ -133,6 +134,7 @@ def test_a_program_declares_the_sources_its_adapter_produces(
         assert source["max_input_rate_per_hour"] == schema.max_input_rate_per_hour, f"{key} rate"
 
 
+@pytest.mark.experiment
 @pytest.mark.parametrize(
     ("program_file", "label_sources", "schemas"),
     [
@@ -192,6 +194,7 @@ def test_a_program_reads_a_target_only_where_nothing_else_carries_it(
 # --- frozen splits ---------------------------------------------------------------------------
 
 
+@pytest.mark.experiment
 def test_every_dataset_has_a_frozen_split() -> None:
     """Section 9 requires the freeze before the sweep, so a missing one is a failure now."""
     assert {split.dataset for split in FROZEN.values()} == {
@@ -201,6 +204,7 @@ def test_every_dataset_has_a_frozen_split() -> None:
     }
 
 
+@pytest.mark.experiment
 @pytest.mark.parametrize("name", sorted(FROZEN))
 def test_folds_are_chronological_and_disjoint(name: str) -> None:
     split = FROZEN[name]
@@ -213,6 +217,7 @@ def test_folds_are_chronological_and_disjoint(name: str) -> None:
     assert split.fold_of(split.train.end) is None
 
 
+@pytest.mark.experiment
 @pytest.mark.parametrize("name", sorted(FROZEN))
 def test_the_declared_gap_is_actually_left(name: str) -> None:
     split = FROZEN[name]
@@ -232,12 +237,14 @@ inferred so that a new split does not quietly opt itself out of the requirement 
 means deciding, in this file, whether it bears the claim."""
 
 
+@pytest.mark.experiment
 def test_every_split_that_bears_h5_withholds_entities() -> None:
     assert set(FROZEN) >= H5_SPLITS, f"named splits that do not exist: {H5_SPLITS - set(FROZEN)}"
     for name in sorted(H5_SPLITS):
         assert FROZEN[name].held_out_entities, f"{name} bears H5 but withholds nothing"
 
 
+@pytest.mark.experiment
 @pytest.mark.parametrize("name", sorted(FROZEN))
 def test_held_out_entities_are_absent_from_training(name: str) -> None:
     split = FROZEN[name]
@@ -249,6 +256,7 @@ def test_held_out_entities_are_absent_from_training(name: str) -> None:
     assert set(split.entities_for("test", entities)) == set(entities)
 
 
+@pytest.mark.experiment
 @pytest.mark.parametrize("name", sorted(FROZEN))
 def test_a_split_hashes_stably(name: str) -> None:
     """The value a run manifest records as ``split_manifest_hash``."""
@@ -258,8 +266,27 @@ def test_a_split_hashes_stably(name: str) -> None:
 
 
 def test_two_splits_of_one_dataset_hash_differently() -> None:
-    """A result computed under one split must not be mistakable for another."""
-    original = FROZEN["uscrn_primary"]
+    """A result computed under one split must not be mistakable for another.
+
+    Built here rather than borrowed from ``FROZEN``: the claim is about how a manifest
+    hashes, which is component behaviour, and a component test that reads a declaration in
+    ``configs/`` would go red if an experiment retired the split it happened to pick.
+    """
+
+    def period(start_day: int, end_day: int) -> splits.Period:
+        return splits.Period(
+            start=datetime(2024, 1, start_day, tzinfo=UTC),
+            end=datetime(2024, 1, end_day, tzinfo=UTC),
+        )
+
+    original = splits.SplitManifest(
+        dataset="synthetic",
+        version="v1",
+        name="hashing",
+        train=period(1, 10),
+        validation=period(11, 20),
+        test=period(21, 28),
+    )
     longer = splits.Period(start=original.test.start, end=original.test.end + timedelta(days=1))
     moved = original.model_copy(update={"test": longer})
     assert moved.split_manifest_hash != original.split_manifest_hash

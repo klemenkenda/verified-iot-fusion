@@ -24,6 +24,25 @@ Preserve temporal correctness above convenience.
 7. Do not inspect final test labels while choosing features or parameters.
 8. Record assumptions, commands, versions, seeds, and generated artifacts.
 
+## The component and the experiments are separate things
+
+The software in `src/` is a component with its own lifecycle. The declarations in `configs/`
+— frozen splits, tasks, programs — are an experimental setup that *uses* the component. The
+experiments guide what gets built, but the component does not fail because of them.
+
+Two rules follow, and both have been violated before:
+
+1. **A test asserts about code, or about a declaration, never both.** If what it checks is a
+   property of a file in `configs/` — folds disjoint, budgets equalised, a program agreeing
+   with its adapter — mark it `@pytest.mark.experiment`. `pytest` then answers *does the
+   software work*, and `pytest -m experiment` answers *is the declared setup still coherent*.
+   A component test must not read `configs/`; build what it needs instead, so retiring an
+   experiment cannot turn the component red.
+2. **A component's capability is not an experimental parameter.** The operator registry grows
+   on its own schedule; what a given run may draw from is declared per task under
+   `operators`. See `models/search_space.py`, where enumerating straight from the registry
+   meant every library addition silently moved recorded baselines.
+
 ## Before declaring a task complete
 
 1. Run the narrow relevant tests, then the required project checks.

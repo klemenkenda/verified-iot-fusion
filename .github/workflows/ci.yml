@@ -54,6 +54,17 @@ jobs:
       - name: Tests
         run: uv run pytest
 
+      # The component's own suite is the step above and it gates the build. This one checks
+      # that the declared experimental setup in configs/ is still coherent - that folds are
+      # disjoint, budgets are equalised, programs agree with their adapters. It is reported
+      # rather than gating, because a deliberate choice about an experiment must not leave
+      # the software looking broken: beijing_reproduction declares a zero gap on purpose
+      # (see eb21839), and blocking on it would make main red for a decision already taken.
+      # Flip continue-on-error off once that split's exemption is settled either way.
+      - name: Experimental setup
+        run: uv run pytest -m experiment
+        continue-on-error: true
+
       # Section 10.5: performance tests run separately from the fast suite and record
       # hardware. They assert the state-bound invariant, not a throughput threshold - a
       # threshold would encode one machine's speed and fail on a slower runner for no defect.

@@ -89,6 +89,7 @@ def test_the_budget_rule_covers_a_full_greedy_pass() -> None:
     assert budget_for(1000, 5) == 5000
 
 
+@pytest.mark.experiment
 @pytest.mark.parametrize("task_file", sorted(path.name for path in TASKS.glob("*.yaml")))
 def test_every_searching_method_of_a_task_gets_the_same_budget(task_file: str) -> None:
     """Section 9.4: the axis is candidate evaluations, equalised across searching methods.
@@ -101,6 +102,7 @@ def test_every_searching_method_of_a_task_gets_the_same_budget(task_file: str) -
     assert len(budgets) <= 1, f"{task_file} gives its searching methods different budgets"
 
 
+@pytest.mark.experiment
 @pytest.mark.parametrize("task_file", sorted(path.name for path in TASKS.glob("*.yaml")))
 def test_a_declared_budget_covers_the_space_it_searches(task_file: str) -> None:
     """The budget is frozen in the file; this is what notices when the space outgrows it.

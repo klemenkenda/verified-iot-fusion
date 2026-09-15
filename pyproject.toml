@@ -61,11 +61,20 @@ packages = ["src/vifusion"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Section 10.5 requires performance tests to run separately from the fast suite, so the
-# default invocation excludes them; CI runs them in a step of their own.
-addopts = "--strict-markers -q -m 'not slow'"
+# Two families run separately from the default suite, each in a CI step of its own.
+#
+# `slow` is section 10.5: performance tests do not belong in the fast loop.
+#
+# `experiment` is the same separation applied to the other axis. The component and the
+# experiments that use it are different things with different lifecycles: a declaration in
+# `configs/` is an experimental parameter, and editing one must not be able to turn the
+# component's suite red. `pytest` therefore answers "does the software work"; `pytest -m
+# experiment` answers "is the declared experimental setup still coherent". Both matter, and
+# conflating them means a deliberate choice about a split leaves the software looking broken.
+addopts = "--strict-markers -q -m 'not slow and not experiment'"
 markers = [
     "slow: performance tests, run separately per section 10.5",
+    "experiment: asserts over the declared experimental setup in configs/ -- frozen splits, tasks, programs -- rather than over component behaviour",
 ]
 
 [tool.ruff]
