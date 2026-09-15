@@ -83,6 +83,17 @@ class SourceSchema(_Strict):
     unit: str | None = None
     """A Pint-parseable unit, or None for a dimensionless or categorical stream."""
 
+    categories: tuple[str, ...] = ()
+    """The values a categorical stream may take, declared rather than observed.
+
+    Required before a search can enumerate a predicate over the stream: ``equals`` needs
+    something to compare against, and the only alternatives are scanning the archive for the
+    values it happens to contain — which would make a declared search space depend on the data
+    it is run over — or letting a proposer guess a spelling and be rejected. It is a property
+    of the *stream*, so the adapter declares it from the dataset's documentation, exactly as it
+    declares a unit. Empty for a numeric stream, and for a categorical one whose domain the
+    dataset does not document."""
+
     max_input_rate_per_hour: Annotated[float, Field(gt=0)] | None = None
     """Required to derive a state bound; its absence is E-RESOURCE-001, not a default."""
 

@@ -74,6 +74,9 @@ class Column:
 
     description: str
 
+    categories: tuple[str, ...] = ()
+    """Declared domain of a categorical column. See :attr:`SourceSchema.categories`."""
+
 
 COLUMNS: tuple[Column, ...] = (
     Column("PM2.5", "pm2_5", "microgram / meter ** 3", "number", "pollutant", "Fine particulates."),
@@ -87,7 +90,37 @@ COLUMNS: tuple[Column, ...] = (
     Column("DEWP", "dewp", "degC", "number", "meteorology", "Dew point."),
     Column("RAIN", "rain", "mm", "number", "meteorology", "Precipitation."),
     Column("WSPM", "wspm", "meter / second", "number", "meteorology", "Wind speed."),
-    Column("wd", "wd", None, "category", "meteorology", "Wind direction, as a compass label."),
+    Column(
+        "wd",
+        "wd",
+        None,
+        "category",
+        "meteorology",
+        "Wind direction, as a compass label.",
+        # The sixteen points of the compass, declared from the dataset's documentation rather
+        # than scanned out of the archive. A domain read from the data would differ between a
+        # fixture and the real files -- the fixture holds three of these -- and a search space
+        # that changed size with its input would not be the declared parameter section 9.4
+        # requires it to be.
+        categories=(
+            "N",
+            "NNE",
+            "NE",
+            "ENE",
+            "E",
+            "ESE",
+            "SE",
+            "SSE",
+            "S",
+            "SSW",
+            "SW",
+            "WSW",
+            "W",
+            "WNW",
+            "NW",
+            "NNW",
+        ),
+    ),
 )
 
 
@@ -180,6 +213,7 @@ def source_schemas() -> tuple[SourceSchema, ...]:
             unit=column.unit,
             max_input_rate_per_hour=MAX_INPUT_RATE_PER_HOUR,
             description=column.description,
+            categories=column.categories,
         )
         for column in COLUMNS
     ]

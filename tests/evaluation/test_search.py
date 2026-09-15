@@ -101,13 +101,13 @@ def test_registering_an_operator_does_not_widen_a_space_that_did_not_declare_it(
     new operator is a task's, written in its config and recorded in the manifest.
     """
     before = enumerate_candidates(UPDATE_SOURCES, NARROW)
-    monkeypatch.setitem(registry.OPERATORS, "median", _newly_registered("median"))
+    monkeypatch.setitem(registry.OPERATORS, "trimmed_mean", _newly_registered("trimmed_mean"))
 
     after = enumerate_candidates(UPDATE_SOURCES, NARROW)
 
     assert {candidate.op for candidate in after} == {candidate.op for candidate in before}
     assert len(after) == len(before)
-    assert "median" in NARROW.omitted_operators(), (
+    assert "trimmed_mean" in NARROW.omitted_operators(), (
         "a space that does not draw from a registered operator should say so, so that a "
         "reader can see the software grew a capability this run did not use"
     )
@@ -117,14 +117,14 @@ def test_opting_in_to_a_new_operator_is_what_widens_the_space(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The other half: declaring it is all it takes, with no change to the enumerator."""
-    monkeypatch.setitem(registry.OPERATORS, "median", _newly_registered("median"))
-    widened = SearchSpace(**SEARCH_SPACE, operators=(*FROZEN_V1_OPERATORS, "median"))
+    monkeypatch.setitem(registry.OPERATORS, "trimmed_mean", _newly_registered("trimmed_mean"))
+    widened = SearchSpace(**SEARCH_SPACE, operators=(*FROZEN_V1_OPERATORS, "trimmed_mean"))
 
     candidates = enumerate_candidates(UPDATE_SOURCES, widened)
 
-    assert "median" in {candidate.op for candidate in candidates}
-    assert "median" not in widened.omitted_operators()
-    assert "median" in widened.as_dict()["operators"], "the manifest must record the widening"
+    assert "trimmed_mean" in {candidate.op for candidate in candidates}
+    assert "trimmed_mean" not in widened.omitted_operators()
+    assert "trimmed_mean" in widened.as_dict()["operators"], "the manifest must record the widening"
 
 
 def test_narrowing_the_operator_set_removes_exactly_that_family() -> None:
@@ -210,13 +210,52 @@ def test_the_space_never_offers_a_target_stream() -> None:
     assert all(candidate.source_id != uscrn.FINAL_SOURCE_ID for candidate in candidates)
 
 
-def test_categorical_sources_are_left_out() -> None:
-    """A category needs an encoding, and choosing one is a modelling decision."""
+def test_a_categorical_source_contributes_only_operators_that_answer_with_a_number() -> None:
+    """The rule changed on 2026-09-16, and this is the half of it that still holds.
+
+    A category needs an encoding before a linear model can read it, and choosing one is a
+    modelling decision rather than a search decision — so no candidate here may *return* a
+    category. What a categorical stream can contribute is a reduction that answers with a
+    number: how many distinct directions the wind took, how stale the reading is, how many
+    observations are missing. Those need no encoding and are exactly as usable as any other
+    column.
+
+    Before this, the stream was dropped whole, which left Beijing's `wd` in the proposer's
+    surface with nothing in the space that could read it.
+    """
     sources = beijing.source_schemas()
-    assert any(source.value_type == "category" for source in sources)
-    candidates = enumerate_candidates(sources, NARROW)
     categorical = {source.feature_name for source in sources if source.value_type == "category"}
-    assert all(candidate.feature_name not in categorical for candidate in candidates)
+    assert categorical, "this test is vacuous without a categorical source"
+
+    candidates = enumerate_candidates(sources, NARROW)
+    over_category = [item for item in candidates if item.feature_name in categorical]
+
+    assert over_category, "a categorical stream should no longer be dropped whole"
+    for candidate in over_category:
+        operator = registry.get(candidate.op)
+        assert operator is not None
+        if not operator.reads_source:
+            continue
+        assert operator.output_type == "number" and not operator.output_follows_source, (
+            f"{candidate.op} over {candidate.feature_name} would return a category, which no "
+            "predictor can read: an Example carries float | None"
+        )
+
+
+def test_no_candidate_over_a_category_is_one_the_compiler_refuses() -> None:
+    """A numeric aggregate over a category is E-TYPE-002, and proposing one wastes budget.
+
+    The generator has to know a narrower rule than "the registry offers it", and the note on
+    PARAMETER_GRIDS records what happens when it does not: twelve candidates rejected on every
+    run, and a baseline that looks searched but was not.
+    """
+    sources = beijing.source_schemas()
+    candidates = enumerate_candidates(sources, NARROW)
+
+    accepted, rejected = search.validate_candidates(sources, candidates)
+
+    assert sum(rejected.values()) == 0, f"the space proposes what the compiler refuses: {rejected}"
+    assert len(accepted) == len(candidates)
 
 
 def test_the_space_is_deterministic() -> None:

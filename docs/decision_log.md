@@ -2660,3 +2660,45 @@ Enefit0   M3/ridge    -0.0852    -0.0852    -0.0852    -0.0852    0.0000    0.00
 - **Phase / gate:** Phase 6 — closes section 5.3. Phases 7-8 and the Gate C prompt freeze are
   now the critical path, with the feedback payload the item that most needs designing rather
   than coding.
+
+### 2026-09-16 — M3 draws from the whole registry; the Gate B figures are superseded
+
+- **Decision:** `SearchSpace.operators` now defaults to `FROZEN_V2_OPERATORS`, all thirty-nine
+  operators the registry defines, so every searching method reaches the whole DSL. A
+  categorical source is no longer dropped whole: it contributes the operators that *answer
+  with a number* — `distinct_count`, `staleness`, `missing_count` — while anything returning a
+  category stays out, because an `Example` carries `float | None` and a categorical column is
+  not a feature a predictor can read. `SourceSchema` gained a declared `categories` domain, and
+  the Beijing adapter declares the sixteen compass points for `wd`. Budgets were re-frozen to
+  cover the larger space: Beijing 6000 -> 11000, USCRN 3500 -> 6500, Enefit 2500 -> 4500.
+- **Alternatives considered:** (1) Leaving M3 on the twenty-seven operators of
+  `FROZEN_V1_OPERATORS` — rejected, and this is the substantive half of the decision. Section
+  9.1 expects M3 to be strong and warns that a weak one makes H1 unfalsifiable rather than
+  easy. An LLM arm holding ten operators the grid could not reach would be exactly that, and
+  the margin would measure the asymmetry rather than the method — the first thing a reviewer
+  would attack. (2) Deriving the category domain from the archive — rejected for the reason
+  `entity_graphs` is declared rather than inferred: the fixture holds three wind directions and
+  the real files sixteen, so a space built that way would change size with its input. (3)
+  Computing the default from `registry.names()` — rejected, that is the coupling removed on
+  2026-09-15 reinstated; `FROZEN_V2_OPERATORS` is written out, and the next operator registered
+  will not silently widen it.
+- **Rationale:** The asymmetry above was introduced the moment the registry grew past what the
+  grid searched, and it is cheaper to pay for now than to explain later. The measured cost is a
+  roughly doubled space — Beijing 459 -> 908 candidates, USCRN 264 -> 504, Enefit 205 -> 365 —
+  and a correspondingly larger evaluation budget on the phase the execution plan calls the hard
+  floor. Every candidate in the widened space compiles: the generator applies a narrower rule
+  than the registry's, so it never proposes a numeric aggregate over a category, which the
+  compiler would refuse with E-TYPE-002.
+- **Affected experiments / artifacts:** **The Gate B grid and its three-seed replicates are
+  superseded, not merely extended.** They were searched over a different declared space, and a
+  figure from one cannot be set beside a figure from the other. Re-running them is a Phase 9
+  cost that has to be planned rather than absorbed. `FROZEN_V1_OPERATORS` is kept, and a task
+  reproducing a recorded Gate B figure declares it, so those results stay interpretable beside
+  the space that produced them.
+- **Made before or after viewing test results:** before. No search has been re-run under the
+  widened space; the candidate counts and budgets above are enumeration arithmetic, not scores.
+- **Phase / gate:** Phase 6, reopening a Gate B input. The `equals`/`is_in` family remains
+  outside the grid: those take a node rather than a stream, so the categorical reading they
+  test would have to be a candidate available as an input but never selectable as a feature,
+  and the evaluation pipeline has no such notion — every accepted candidate becomes a column.
+  Adding one is the next step if the LLM arm's access to that family proves to matter.

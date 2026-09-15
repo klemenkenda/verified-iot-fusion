@@ -62,7 +62,7 @@ methods:
   - id: M3
     search:
       strategy: greedy
-      evaluations: 3500
+      evaluations: 6500
       max_features: 12
       seed: 20260910
     description: >-
@@ -73,7 +73,7 @@ methods:
   - id: M3r
     search:
       strategy: random
-      evaluations: 3500
+      evaluations: 6500
       max_features: 12
       seed: 20260910
     description: >-

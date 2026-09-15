@@ -161,7 +161,7 @@ methods:
   - id: M3
     search:
       strategy: greedy
-      evaluations: 2500
+      evaluations: 4500
       max_features: 12
       seed: 20260911
       space:
@@ -186,7 +186,7 @@ methods:
   - id: M3r
     search:
       strategy: random
-      evaluations: 2500
+      evaluations: 4500
       max_features: 12
       seed: 20260911
       space:
@@ -211,7 +211,7 @@ methods:
   - id: M3f
     search:
       strategy: fastener
-      evaluations: 2500
+      evaluations: 4500
       max_features: 12
       seed: 20260911
       space:
