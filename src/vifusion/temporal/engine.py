@@ -47,6 +47,7 @@ from vifusion.temporal.records import (
     content_signature,
 )
 from vifusion.temporal.specs import (
+    TIME_AWARE,
     Aggregate,
     CalendarFeature,
     FeatureSpec,
@@ -378,7 +379,11 @@ class FeatureEngine:
                 )
             if record.value is not None:
                 values.append(float(record.value))
-        return _feature(spec, _aggregate(values, spec.aggregate), tuple(in_window))
+        if spec.aggregate in TIME_AWARE:
+            computed = _time_aggregate(in_window, spec.aggregate, prediction_time)
+        else:
+            computed = _aggregate(values, spec.aggregate)
+        return _feature(spec, computed, tuple(in_window))
 
     def _missing(
         self, spec: MissingCount, state: StreamState, prediction_time: datetime
@@ -421,6 +426,18 @@ def _aggregate(values: Sequence[float], aggregate: Aggregate) -> float | None:
         return max(values)
     if aggregate is Aggregate.SUM:
         return sum(values)
+    if aggregate is Aggregate.MEDIAN:
+        return _quantile(sorted(values), 0.5)
+    if aggregate is Aggregate.P25:
+        return _quantile(sorted(values), 0.25)
+    if aggregate is Aggregate.P75:
+        return _quantile(sorted(values), 0.75)
+    if aggregate is Aggregate.IQR:
+        ordered = sorted(values)
+        return _quantile(ordered, 0.75) - _quantile(ordered, 0.25)
+    if aggregate is Aggregate.MAD:
+        centre = _quantile(sorted(values), 0.5)
+        return _quantile(sorted(abs(value - centre) for value in values), 0.5)
     observed, mean, variance = _welford(values)
     assert observed == count
     if aggregate is Aggregate.MEAN:
@@ -428,6 +445,72 @@ def _aggregate(values: Sequence[float], aggregate: Aggregate) -> float | None:
     if aggregate is Aggregate.VARIANCE:
         return variance
     return None if variance is None else variance**0.5
+
+
+def _quantile(ordered: Sequence[float], level: float) -> float:
+    """The ``level`` quantile of an already-sorted sequence, interpolated linearly.
+
+    The convention is fixed in :mod:`vifusion.temporal.specs` and is NumPy's default: no
+    implementation here may choose a different one, because three of them have to agree.
+    """
+    position = (len(ordered) - 1) * level
+    below = int(position)
+    if below >= len(ordered) - 1:
+        return ordered[-1]
+    return ordered[below] + (position - below) * (ordered[below + 1] - ordered[below])
+
+
+def _time_aggregate(
+    records: Sequence[CanonicalRecord], aggregate: Aggregate, prediction_time: datetime
+) -> float | None:
+    """Aggregates that read event times as well as values.
+
+    Separate from :func:`_aggregate` rather than folded into it, because ``_aggregate`` is
+    also what :func:`reduce_related` reduces an entity graph with, where there is no time axis
+    to read. See :data:`~vifusion.temporal.specs.TIME_AWARE`.
+    """
+    if not records:
+        return None
+    if aggregate is Aggregate.SLOPE:
+        return _slope(records)
+
+    want_max = aggregate is Aggregate.TIME_SINCE_MAX
+    chosen = records[0]
+    for record in records[1:]:
+        best = float(chosen.value)  # type: ignore[arg-type]
+        value = float(record.value)  # type: ignore[arg-type]
+        better = value > best if want_max else value < best
+        # Ties go to the later record: "time since the peak" means the most recent one.
+        if better or (value == best and record.event_time > chosen.event_time):
+            chosen = record
+    return (prediction_time - chosen.event_time).total_seconds()
+
+
+def _slope(records: Sequence[CanonicalRecord]) -> float | None:
+    """Least-squares slope of value on event time, in units per second.
+
+    Centred rather than computed from raw sums of squares. The textbook
+    ``(n*Sxy - Sx*Sy) / (n*Sxx - Sx*Sx)`` form is algebraically identical and numerically
+    much worse here: event times run to tens of thousands of seconds over a 24-hour window,
+    so ``n*Sxx`` and ``Sx*Sx`` agree in their leading digits and cancel catastrophically. The
+    independence this file owes the oracle is in how the sums are accumulated, not in
+    choosing a formulation known to lose precision.
+    """
+    if len(records) < 2:
+        return None
+    origin = min(record.event_time for record in records)
+    times = [(record.event_time - origin).total_seconds() for record in records]
+    values = [float(record.value) for record in records]  # type: ignore[arg-type]
+    count = len(times)
+    mean_time = sum(times) / count
+    mean_value = sum(values) / count
+    spread = sum((time - mean_time) ** 2 for time in times)
+    if spread == 0.0:
+        return None
+    covariance = sum(
+        (time - mean_time) * (value - mean_value) for time, value in zip(times, values, strict=True)
+    )
+    return covariance / spread
 
 
 def reduce_related(

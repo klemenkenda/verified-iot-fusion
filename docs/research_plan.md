@@ -214,6 +214,10 @@ null_policy: reject | propagate | impute_constant | last_value
 
 The first paper should avoid arbitrary user-defined functions. New operators should be added to the registry only with semantics, reference implementation, unit tests, property tests, and state bounds.
 
+**Implementation status against this list.** The registry implements last-known value with a staleness bound, exact lag, trailing count/sum/mean/variance/standard deviation/minimum/maximum, missing-count, staleness, calendar features, unit-checked arithmetic, `coalesce`, forecast selection by lead, and a cross-entity mean. Still specified here and not yet implemented: **exact quantile** over the retained window, **trailing slope**, and **categorical equality and membership** — the aggregates are numeric-only, so a categorical stream such as Beijing's wind direction can today be read by `last` and by nothing else. Difference and ratio exist as arithmetic but are restricted to within-stream pairs by the search space rather than by the DSL.
+
+The gap is not a state-budget question, and the bullet below already settles that: the raw window is retained, so an order statistic costs what a mean costs. The implemented set is the set expressible as a *constant-space accumulator*, which is a narrower criterion than this section states and was never the one it asked for.
+
 Three constraints on the registry follow from the correctness argument and should not be relaxed for convenience:
 
 - **No approximate sketches.** Streaming quantile estimators such as t-digest or P-square cannot reproduce a batch quantile exactly, which would make batch/stream parity untestable as an equality. Because every window is bounded by declared lookback, the raw window can be retained and the quantile computed exactly. Accept the memory cost: it removes an entire class of parity failures, and a caveat paragraph from the paper.
@@ -506,7 +510,10 @@ Before official runs, freeze:
 - token limit and model settings;
 - wall-clock or candidate-evaluation budget;
 - non-LLM search budget;
-- downstream-model hyperparameter budget.
+- downstream-model hyperparameter budget;
+- **the operator set each searching method draws from**, named explicitly in the task config.
+
+**Freeze the operator set, not the registry.** The registry in section 5.3 is the software's capability and is expected to grow; what any one run was allowed to reach for is an experimental parameter, declared per task under `operators` and recorded in the run manifest. These were the same variable until 2026-09-15, which meant registering an operator retroactively widened the grid every recorded baseline had been searched over. Keeping them separate is what lets the DSL be improved after a baseline is banked without invalidating it — and the combined-feature cap makes the coupling worse than it looks, since a wider leaf set changes which pairs survive the cap rather than only adding to them.
 
 **Equalise on candidate evaluations.** This is the fairness crux of the entire comparison and the first thing a reviewer will attack. Random or exhaustive search can generate thousands of candidates for the cost of one LLM call, so equalising on *LLM calls* hands M8 a large hidden compute advantage, while equalising on wall time rewards whichever method happens to have lower API latency. Fix the number of candidate evaluations — the expensive, method-independent axis — across all searching methods, and report LLM calls, tokens, generation latency, and monetary cost separately as the *overhead* the method adds. Report both total proposed candidates and accepted/evaluated candidates.
 

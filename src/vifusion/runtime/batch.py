@@ -35,6 +35,7 @@ from vifusion.temporal.boundaries import in_trailing_window, within_staleness
 from vifusion.temporal.records import CanonicalRecord, RecordKind, deduplicate
 from vifusion.temporal.replay import PredictionRequest
 from vifusion.temporal.specs import (
+    TIME_AWARE,
     Aggregate,
     CalendarFeature,
     CrossEntityAggregate,
@@ -63,6 +64,14 @@ BATCH_LOWERINGS = frozenset(
         "stddev",
         "min",
         "max",
+        "median",
+        "p25",
+        "p75",
+        "iqr",
+        "mad",
+        "slope",
+        "time_since_max",
+        "time_since_min",
         "cross_entity_mean",
         "add",
         "subtract",
@@ -156,6 +165,17 @@ def _aggregate(values: list[float], aggregate: Aggregate) -> float | None:
         return max(values)
     if aggregate is Aggregate.SUM:
         return math.fsum(values)
+    if aggregate is Aggregate.MEDIAN:
+        return _quantile(values, 0.5)
+    if aggregate is Aggregate.P25:
+        return _quantile(values, 0.25)
+    if aggregate is Aggregate.P75:
+        return _quantile(values, 0.75)
+    if aggregate is Aggregate.IQR:
+        return _quantile(values, 0.75) - _quantile(values, 0.25)
+    if aggregate is Aggregate.MAD:
+        centre = _quantile(values, 0.5)
+        return _quantile([abs(value - centre) for value in values], 0.5)
     mean = math.fsum(values) / count
     if aggregate is Aggregate.MEAN:
         return mean
@@ -163,6 +183,60 @@ def _aggregate(values: list[float], aggregate: Aggregate) -> float | None:
         return None
     variance = math.fsum((value - mean) ** 2 for value in values) / (count - 1)
     return variance if aggregate is Aggregate.VARIANCE else math.sqrt(variance)
+
+
+def _quantile(values: Sequence[float], level: float) -> float:
+    """Linear interpolation between order statistics; the convention is fixed in ``specs``."""
+    ordered = sorted(values)
+    highest = len(ordered) - 1
+    position = highest * level
+    floor = int(position // 1)
+    if floor >= highest:
+        return ordered[highest]
+    return ordered[floor] + (position - floor) * (ordered[floor + 1] - ordered[floor])
+
+
+def _time_aggregate(
+    records: Sequence[CanonicalRecord], aggregate: Aggregate, prediction_time: datetime
+) -> float | None:
+    """The aggregates that read event times. See ``specs.TIME_AWARE`` for why they are apart."""
+    if not records:
+        return None
+    if aggregate is Aggregate.SLOPE:
+        return _slope(records)
+    sign = 1.0 if aggregate is Aggregate.TIME_SINCE_MAX else -1.0
+    chosen = max(
+        records,
+        # Latest event time wins a tie between equal extrema, per `specs`.
+        key=lambda record: (sign * float(record.value), record.event_time),  # type: ignore[arg-type]
+    )
+    return (prediction_time - chosen.event_time).total_seconds()
+
+
+def _slope(records: Sequence[CanonicalRecord]) -> float | None:
+    """Least-squares slope of value on event time, accumulated in one explicit pass.
+
+    The centred sums are built with a running ``+=`` over a single loop, where the engine uses
+    generator ``sum`` and the oracle uses ``math.fsum``. Three traversals of the same
+    formulation is the independence the ``slope`` parity budget is sized against.
+    """
+    if len(records) < 2:
+        return None
+    origin = min(record.event_time for record in records)
+    times = [(record.event_time - origin).total_seconds() for record in records]
+    values = [float(record.value) for record in records]  # type: ignore[arg-type]
+    count = len(records)
+    mean_time = math.fsum(times) / count
+    mean_value = math.fsum(values) / count
+    covariance = 0.0
+    spread = 0.0
+    for time, value in zip(times, values, strict=True):
+        offset = time - mean_time
+        covariance += offset * (value - mean_value)
+        spread += offset * offset
+    if spread == 0.0:
+        return None
+    return covariance / spread
 
 
 def _reduce_related(
@@ -276,7 +350,11 @@ def _evaluate_leaf(
                     "have rejected this program with E-TYPE-002"
                 )
             numbers.append(float(record.value))
-        return _value(spec.name, _aggregate(numbers, spec.aggregate), in_window)
+        if spec.aggregate in TIME_AWARE:
+            computed = _time_aggregate(in_window, spec.aggregate, prediction_time)
+        else:
+            computed = _aggregate(numbers, spec.aggregate)
+        return _value(spec.name, computed, in_window)
 
     if isinstance(spec, MissingCount):
         in_window = [

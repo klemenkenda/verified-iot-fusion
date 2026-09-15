@@ -21,6 +21,19 @@ Three constraints from section 5.3 are enforced structurally rather than remembe
 * **Parity tolerance is per operator and declared up front**, so it cannot be widened later
   under schedule pressure.
 
+**What an addition costs, and what it no longer costs (2026-09-15).** Until this date the
+search space enumerated straight from this registry, so registering an operator widened the
+grid of every task — including tasks whose baselines were already recorded — and adding one was
+therefore a protocol decision. It is not any more: a :class:`~vifusion.models.search_space.
+SearchSpace` names the operators it draws from, and an operator registered here is absent from
+every existing experiment until a task config asks for it. So the argument for keeping this set
+small is the one stated above and only that one — every operator enlarges the surface the
+correctness claim must cover and the volume of generated code a reviewer must read — and no
+longer includes any concern about disturbing a banked result. Note also that "exact over a
+retained window" means the engine materialises the window before reducing it, so an order
+statistic costs the state a mean already costs; the set below is the set expressible as a
+constant-space accumulator, which was never the criterion this module claimed to apply.
+
 **Additions, with the failure analysis that earned them** — section 5.3 admits an operator only
 from a documented failure, so each one is named here:
 
@@ -41,10 +54,18 @@ from typing import Literal
 
 from vifusion.dsl.schema import TimeDirection, ValueType
 from vifusion.temporal.calendar import CalendarField
-from vifusion.temporal.specs import Aggregate
+from vifusion.temporal.specs import TIME_AWARE, Aggregate
 
-UnitRule = Literal["preserve", "multiply", "divide", "dimensionless", "seconds", "custom"]
-"""How an operator's output unit derives from its inputs (section 5.3)."""
+UnitRule = Literal[
+    "preserve", "multiply", "divide", "dimensionless", "seconds", "per_second", "custom"
+]
+"""How an operator's output unit derives from its inputs (section 5.3).
+
+``per_second`` divides the source's unit by a second and exists for ``slope``. It is a
+separate rule rather than ``custom`` because ``custom`` has no defined behaviour in
+``compiler/compile.py`` and falls through to ``preserve`` — which for a trend would report a
+rate in the units of a level, the kind of quiet dimensional error the unit system exists to
+make impossible."""
 
 NullPolicy = Literal[
     "reject", "propagate", "impute_constant", "last_value", "first_non_null"
@@ -183,6 +204,10 @@ def _cross_entity_operator(
     function of lookback and arrival rate; it is the edge's declared ``max_related_entities``,
     checked in ``compiler/compile.py`` rather than derived here.
     """
+    assert aggregate not in TIME_AWARE, (
+        f"{name!r} reduces across related entities, which have no time axis; a time-aware "
+        "aggregate would regress against an arbitrary entity ordering"
+    )
     return Operator(
         name=name,
         summary=summary,
@@ -303,6 +328,33 @@ OPERATORS: dict[str, Operator] = {
         ),
         _aggregate_operator("min", Aggregate.MIN, "Minimum over the window."),
         _aggregate_operator("max", Aggregate.MAX, "Maximum over the window."),
+        _aggregate_operator("median", Aggregate.MEDIAN, "Median over the window."),
+        _aggregate_operator("p25", Aggregate.P25, "First-quartile value over the window."),
+        _aggregate_operator("p75", Aggregate.P75, "Third-quartile value over the window."),
+        _aggregate_operator("iqr", Aggregate.IQR, "Interquartile range over the window."),
+        _aggregate_operator(
+            "mad", Aggregate.MAD, "Unscaled median absolute deviation over the window."
+        ),
+        _aggregate_operator(
+            "slope",
+            Aggregate.SLOPE,
+            "Least-squares trend of value on event time, per second.",
+            unit_rule="per_second",
+            parity="tolerance",
+            tolerance=32,
+        ),
+        _aggregate_operator(
+            "time_since_max",
+            Aggregate.TIME_SINCE_MAX,
+            "Seconds since the most recent occurrence of the window's maximum.",
+            unit_rule="seconds",
+        ),
+        _aggregate_operator(
+            "time_since_min",
+            Aggregate.TIME_SINCE_MIN,
+            "Seconds since the most recent occurrence of the window's minimum.",
+            unit_rule="seconds",
+        ),
         _cross_entity_operator(
             "cross_entity_mean",
             Aggregate.MEAN,

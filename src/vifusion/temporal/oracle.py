@@ -37,6 +37,7 @@ from vifusion.temporal.boundaries import (
 )
 from vifusion.temporal.records import CanonicalRecord, RecordKind, deduplicate
 from vifusion.temporal.specs import (
+    TIME_AWARE,
     Aggregate,
     CalendarFeature,
     FeatureSpec,
@@ -173,6 +174,8 @@ def _aggregate(values: list[float], aggregate: Aggregate) -> float | None:
         return min(values)
     if aggregate is Aggregate.MAX:
         return max(values)
+    if aggregate in _ORDER_STATISTICS:
+        return _order_statistic(values, aggregate)
     mean = math.fsum(values) / count
     if aggregate is Aggregate.MEAN:
         return mean
@@ -182,6 +185,90 @@ def _aggregate(values: list[float], aggregate: Aggregate) -> float | None:
     if aggregate is Aggregate.VARIANCE:
         return variance
     return math.sqrt(variance)
+
+
+_ORDER_STATISTICS: frozenset[Aggregate] = frozenset(
+    {Aggregate.MEDIAN, Aggregate.P25, Aggregate.P75, Aggregate.IQR, Aggregate.MAD}
+)
+
+_LEVELS: dict[Aggregate, float] = {
+    Aggregate.MEDIAN: 0.5,
+    Aggregate.P25: 0.25,
+    Aggregate.P75: 0.75,
+}
+
+
+def _quantile(values: Sequence[float], level: float) -> float:
+    """Linear interpolation between order statistics, to the convention in ``specs``.
+
+    Sorts a fresh copy on every call: this module retains nothing and reuses nothing, and a
+    quantile computed here must not depend on an ordering some earlier call established.
+    """
+    ordered = sorted(values)
+    last = len(ordered) - 1
+    position = last * level
+    floor = math.floor(position)
+    if floor >= last:
+        return ordered[last]
+    fraction = position - floor
+    low, high = ordered[floor], ordered[floor + 1]
+    return low + fraction * (high - low)
+
+
+def _order_statistic(values: Sequence[float], aggregate: Aggregate) -> float:
+    if aggregate is Aggregate.IQR:
+        return _quantile(values, 0.75) - _quantile(values, 0.25)
+    if aggregate is Aggregate.MAD:
+        centre = _quantile(values, 0.5)
+        return _quantile([abs(value - centre) for value in values], 0.5)
+    return _quantile(values, _LEVELS[aggregate])
+
+
+def _time_aggregate(
+    records: Sequence[CanonicalRecord], aggregate: Aggregate, prediction_time: datetime
+) -> float | None:
+    """The time-aware family, recomputed from the window with no retained state."""
+    observations = _observations(records)
+    if not observations:
+        return None
+    if aggregate is Aggregate.SLOPE:
+        return _slope(observations)
+
+    # Always a `max`, over a key that ranks by the extremum being sought and then by event
+    # time, so the latest of several equal extrema wins — the tie rule fixed in `specs`. A
+    # `min` for the minimum case would take the *earliest* of the tied records instead.
+    sign = 1.0 if aggregate is Aggregate.TIME_SINCE_MAX else -1.0
+
+    def ranking(record: CanonicalRecord) -> tuple[float, datetime]:
+        return (sign * float(record.value), record.event_time)  # type: ignore[arg-type]
+
+    chosen = max(observations, key=ranking)
+    return (prediction_time - chosen.event_time).total_seconds()
+
+
+def _slope(records: Sequence[CanonicalRecord]) -> float | None:
+    """Least-squares slope by explicit two-pass arithmetic over a list.
+
+    Same centred formulation the engine uses — the choice of formulation is a numerical
+    decision, not a place to be different for its own sake — but every sum here is
+    ``math.fsum`` over a materialised list, against the engine's running ``sum``. That is the
+    disagreement the parity budget for ``slope`` is sized for.
+    """
+    if len(records) < 2:
+        return None
+    origin = min(record.event_time for record in records)
+    pairs = [
+        ((record.event_time - origin).total_seconds(), float(record.value))  # type: ignore[arg-type]
+        for record in records
+    ]
+    count = len(pairs)
+    mean_time = math.fsum(time for time, _ in pairs) / count
+    mean_value = math.fsum(value for _, value in pairs) / count
+    spread = math.fsum((time - mean_time) ** 2 for time, _ in pairs)
+    if spread == 0.0:
+        return None
+    covariance = math.fsum((time - mean_time) * (value - mean_value) for time, value in pairs)
+    return covariance / spread
 
 
 def _window_aggregate(
@@ -195,7 +282,12 @@ def _window_aggregate(
         if in_trailing_window(record.event_time, prediction_time, spec.window)
     ]
     contributors = _observations(in_window)
-    return _value(spec, _aggregate(_numbers(contributors), spec.aggregate), contributors)
+    if spec.aggregate in TIME_AWARE:
+        _numbers(contributors)  # same categorical rejection the value-only path performs
+        computed = _time_aggregate(contributors, spec.aggregate, prediction_time)
+    else:
+        computed = _aggregate(_numbers(contributors), spec.aggregate)
+    return _value(spec, computed, contributors)
 
 
 def _staleness(

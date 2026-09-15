@@ -17,6 +17,13 @@ with the same diagnostic codes. That makes the invalid-proposal rate of section 
 for the non-LLM baseline too, which is what turns "the verifier catches LLM mistakes" into a
 comparison rather than an anecdote.
 
+**The registry's capability and this grid are separate things, and the separation is
+load-bearing.** :mod:`vifusion.dsl.registry` says what the software can express; a
+:class:`SearchSpace` says what one experiment draws from, and names it explicitly under
+``operators``. The two moved together until 2026-09-15 — enumeration walked the whole registry
+— so a new operator changed the capability of every recorded baseline, which made adding one a
+protocol decision rather than a library one. It is now a library one.
+
 **Categorical sources are excluded, deliberately.** A category needs an encoding before it can
 enter a linear model, and choosing one is a modelling decision rather than a search decision.
 Including them without an encoding would produce features that are silently null for every
@@ -34,6 +41,56 @@ from vifusion.dsl import registry
 from vifusion.dsl.schema import EntityGraphSchema, SourceSchema, parse_duration
 
 
+class SearchSpaceError(ValueError):
+    """The declared grid and the registry disagree about what is searchable.
+
+    Raised three ways: the grid declares an operator the registry does not define; it pairs
+    features with a combiner it did not declare; or it declares an operator whose parameters
+    have no grid to draw values from. All three are refusals rather than filters — each one
+    would otherwise shrink a baseline silently, which looks exactly like a result.
+    """
+
+
+FROZEN_V1_OPERATORS: tuple[str, ...] = (
+    "add",
+    "coalesce",
+    "count",
+    "cross_entity_mean",
+    "day_after_holiday",
+    "day_before_holiday",
+    "day_of_month",
+    "day_of_week",
+    "day_of_year",
+    "divide",
+    "forecast",
+    "hour_of_day",
+    "is_holiday",
+    "is_weekend",
+    "lag",
+    "last",
+    "max",
+    "mean",
+    "min",
+    "missing_count",
+    "month_of_year",
+    "multiply",
+    "staleness",
+    "stddev",
+    "subtract",
+    "sum",
+    "variance",
+)
+"""The operator set the official runs draw from, named rather than derived.
+
+This is the registry as it stood on 2026-09-15, written out in full and deliberately *not*
+computed from :func:`registry.names`. A pin that tracked the registry would not be a pin: the
+point is that the registry may grow without moving any baseline that has already been run.
+
+Widening the space is an experimental decision and belongs in a task config, where it is
+recorded in the run manifest alongside the budget, not in a default that changes under a
+previous run's feet."""
+
+
 @dataclass(frozen=True)
 class SearchSpace:
     """The declared grid a search draws from.
@@ -43,6 +100,21 @@ class SearchSpace:
     a wider grid finds more for the same number of evaluations. It is recorded in the run
     manifest alongside the budget for the same reason.
     """
+
+    operators: tuple[str, ...] = FROZEN_V1_OPERATORS
+    """The operator names this grid draws from.
+
+    **The registry measures what the software can express; this measures what one experiment
+    was allowed to.** Until 2026-09-15 there was no such field, and
+    :func:`enumerate_candidates` walked the whole registry — so adding an operator silently
+    widened every task's grid, including tasks whose baselines were already recorded. That is
+    the same defect `entity_graphs` carried until 2026-09-11, one level up: a search's
+    assumptions taken from whatever happened to be available rather than from what the task
+    declared.
+
+    Narrowing it is legal and is how an ablation is written. Naming an operator the registry
+    does not define is not: it is almost always a typo, and a typo here removes a feature
+    family from a baseline without anything failing."""
 
     windows: tuple[str, ...] = ("1h", "3h", "6h", "24h")
     lags: tuple[str, ...] = ("1h", "3h", "24h")
@@ -74,6 +146,7 @@ class SearchSpace:
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            "operators": list(self.operators),
             "windows": list(self.windows),
             "lags": list(self.lags),
             "staleness_bounds": list(self.staleness_bounds),
@@ -88,6 +161,35 @@ class SearchSpace:
                 for graph in self.graph_schemas()
             ],
         }
+
+    def operator_names(self) -> frozenset[str]:
+        """The declared operators, checked against the registry.
+
+        Checked here rather than in ``__post_init__`` so that a space stays constructible for
+        inspection, and refused rather than filtered so a misspelled operator is a stopped run
+        instead of a quietly smaller one.
+        """
+        declared = frozenset(self.operators)
+        unknown = sorted(declared - frozenset(registry.names()))
+        if unknown:
+            raise SearchSpaceError(
+                f"search space declares operators the registry does not define: {unknown}; "
+                "either the name is a typo or the operator has yet to be registered"
+            )
+        undeclared = sorted(frozenset(self.arithmetic) - declared)
+        if undeclared:
+            raise SearchSpaceError(
+                f"search space pairs features with {undeclared}, which it does not declare "
+                "under `operators`; add them there or drop them from `arithmetic`"
+            )
+        return declared
+
+    def omitted_operators(self) -> tuple[str, ...]:
+        """Registry operators this space does not draw from.
+
+        For the report that tells a reader the software grew a capability the run did not use.
+        """
+        return tuple(sorted(frozenset(registry.names()) - frozenset(self.operators)))
 
     def graph_schemas(self) -> tuple[EntityGraphSchema, ...]:
         """The declared edges as schemas, however they were written in the task config."""
@@ -138,10 +240,6 @@ def _identifier(*parts: str) -> str:
         if part
     ]
     return "_".join(cleaned)
-
-
-class SearchSpaceError(ValueError):
-    """The declared grid cannot express an operator the registry offers."""
 
 
 PARAMETER_GRIDS: dict[str, str] = {
@@ -230,6 +328,10 @@ def enumerate_candidates(
 ) -> tuple[Candidate, ...]:
     """Every feature the declared grid can express over the declared sources.
 
+    Drawn from ``space.operators`` rather than from the registry: an operator the registry
+    defines but the space does not declare is not a candidate here. See
+    :attr:`SearchSpace.operators` for why the space names them instead of inheriting them.
+
     Deterministic in order: the same sources and the same grid produce the same list on every
     machine, so a seeded search is reproducible rather than merely repeatable.
 
@@ -239,13 +341,14 @@ def enumerate_candidates(
     with E-RESOLVE-008 and spend budget to learn nothing.
     """
     graph_names = tuple(graph.name for graph in entity_graphs)
+    declared = space.operator_names()
     candidates: list[Candidate] = []
 
     for source in _numeric_sources(sources):
         stream = {"source": source.source_id, "feature": source.feature_name}
         prefix = _identifier(source.source_id, source.feature_name)
 
-        for name in sorted(registry.names()):
+        for name in sorted(declared):
             operator = registry.get(name)
             if operator is None or not operator.reads_source or operator.arity != 0:
                 continue
@@ -293,7 +396,7 @@ def _reach(params: dict[str, str]) -> str | None:
 def _calendar_candidates(space: SearchSpace) -> list[Candidate]:
     """Date and time features of the prediction time, which read no stream."""
     found: list[Candidate] = []
-    for name in sorted(registry.names()):
+    for name in sorted(space.operator_names()):
         operator = registry.get(name)
         if operator is None or operator.calendar_field is None:
             continue

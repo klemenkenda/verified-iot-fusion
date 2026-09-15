@@ -50,6 +50,14 @@ LEAF_PARAMS: dict[str, dict[str, Any]] = {
     "stddev": {"window": "2h"},
     "min": {"window": "2h"},
     "max": {"window": "2h"},
+    "median": {"window": "2h"},
+    "p25": {"window": "2h"},
+    "p75": {"window": "2h"},
+    "iqr": {"window": "2h"},
+    "mad": {"window": "2h"},
+    "slope": {"window": "2h"},
+    "time_since_max": {"window": "2h"},
+    "time_since_min": {"window": "2h"},
     "forecast": {"lead": "2h"},
     "cross_entity_mean": {"entity_ref": "neighbours"},
 }
@@ -164,6 +172,13 @@ def test_every_source_reading_operator_follows_its_declared_unit_rule(
     elif rule == "multiply":
         squared = _dimensionality(unit) * _dimensionality(unit)
         assert _dimensionality(assigned) == squared, f"{op} squares its input's dimension"
+    elif rule == "per_second":
+        rate = _dimensionality(unit) / _dimensionality("second")
+        assert _dimensionality(assigned) == rate, f"{op} reports a rate, not a level"
+        assert _dimensionality(assigned) != _dimensionality(unit) or unit is None, (
+            f"{op} must not return the source's own dimension: a trend in the units of a "
+            "level is the error `per_second` exists to prevent"
+        )
     else:  # pragma: no cover - a new rule must be given a case here, not defaulted
         raise AssertionError(f"operator {op} declares an unhandled unit rule {rule!r}")
 

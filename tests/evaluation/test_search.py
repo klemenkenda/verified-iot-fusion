@@ -27,6 +27,7 @@ from vifusion.evaluation.tasks import Example, MethodSpec, TaskConfig
 from vifusion.models import search
 from vifusion.models.search import Score, SearchBudget, SearchError
 from vifusion.models.search_space import (
+    FROZEN_V1_OPERATORS,
     Candidate,
     SearchSpace,
     SearchSpaceError,
@@ -43,19 +44,24 @@ NARROW = SearchSpace(**SEARCH_SPACE)
 # --- the space --------------------------------------------------------------------------------
 
 
-def test_the_space_is_enumerated_from_the_registry() -> None:
-    """Every source-reading operator the registry offers appears in the space.
+def test_the_space_is_enumerated_from_the_operators_it_declares() -> None:
+    """Every source-reading operator the space *declares* appears in it.
 
     The first implementation branched on ``Operator.windowed``, which is true for ``lag``
     because it retains state — and so proposed every lag with a ``window`` parameter. The
     verifier rejected all of them, which is the system working and a weaker baseline. This is
     the test that would have caught it.
+
+    Phrased against the declared set rather than the registry: until 2026-09-15 this test read
+    ``registry.names()``, which quietly asserted that a space must cover the whole registry —
+    the very coupling ``SearchSpace.operators`` exists to break. It would have failed on the
+    next operator anyone registered, for no reason a reader could act on.
     """
     candidates = enumerate_candidates(UPDATE_SOURCES, NARROW)
     generated = {candidate.op for candidate in candidates}
     expected = {
         name
-        for name in registry.names()
+        for name in NARROW.operator_names()
         if (operator := registry.get(name)) is not None
         and operator.reads_source
         and operator.arity == 0
@@ -64,6 +70,90 @@ def test_the_space_is_enumerated_from_the_registry() -> None:
         and not operator.cross_entity
     }
     assert expected <= generated, f"operators missing from the space: {expected - generated}"
+
+
+def _newly_registered(name: str) -> registry.Operator:
+    """A registry addition, shaped the way a library change would make one."""
+    return registry.Operator(
+        name=name,
+        summary="A newly registered trailing-window aggregate.",
+        arity=0,
+        reads_source=True,
+        input_types=("number",),
+        output_type="number",
+        unit_rule="preserve",
+        time_direction="past_only",
+        null_policy="propagate",
+        required_params=frozenset({"source", "feature", "window"}),
+        batch_lowering="exact",
+        windowed=True,
+    )
+
+
+def test_registering_an_operator_does_not_widen_a_space_that_did_not_declare_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The decoupling, stated as the property it exists to protect.
+
+    Until 2026-09-15 enumeration walked the whole registry, so adding an operator changed the
+    grid every recorded baseline had been searched over — a library change that silently moved
+    an experimental parameter. Growing the registry is now a library decision; reaching for the
+    new operator is a task's, written in its config and recorded in the manifest.
+    """
+    before = enumerate_candidates(UPDATE_SOURCES, NARROW)
+    monkeypatch.setitem(registry.OPERATORS, "median", _newly_registered("median"))
+
+    after = enumerate_candidates(UPDATE_SOURCES, NARROW)
+
+    assert {candidate.op for candidate in after} == {candidate.op for candidate in before}
+    assert len(after) == len(before)
+    assert "median" in NARROW.omitted_operators(), (
+        "a space that does not draw from a registered operator should say so, so that a "
+        "reader can see the software grew a capability this run did not use"
+    )
+
+
+def test_opting_in_to_a_new_operator_is_what_widens_the_space(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other half: declaring it is all it takes, with no change to the enumerator."""
+    monkeypatch.setitem(registry.OPERATORS, "median", _newly_registered("median"))
+    widened = SearchSpace(**SEARCH_SPACE, operators=(*FROZEN_V1_OPERATORS, "median"))
+
+    candidates = enumerate_candidates(UPDATE_SOURCES, widened)
+
+    assert "median" in {candidate.op for candidate in candidates}
+    assert widened.omitted_operators() == ()
+    assert "median" in widened.as_dict()["operators"], "the manifest must record the widening"
+
+
+def test_narrowing_the_operator_set_removes_exactly_that_family() -> None:
+    """How an ablation over the operator set is written."""
+    without_lag = SearchSpace(
+        **SEARCH_SPACE,
+        operators=tuple(name for name in FROZEN_V1_OPERATORS if name != "lag"),
+    )
+
+    generated = {candidate.op for candidate in enumerate_candidates(UPDATE_SOURCES, without_lag)}
+
+    assert "lag" not in generated
+    assert "last" in generated, "narrowing one operator must not disturb its neighbours"
+
+
+def test_an_operator_the_registry_does_not_define_is_refused() -> None:
+    """A misspelled operator removes a feature family from a baseline and nothing fails.
+
+    Refused rather than filtered, for the reason `entity_graphs` is refused rather than
+    inferred: a quietly smaller space is a weaker result that still looks like a result.
+    """
+    with pytest.raises(SearchSpaceError, match="medain"):
+        SearchSpace(operators=("last", "medain")).operator_names()
+
+
+def test_pairing_with_an_operator_the_space_does_not_declare_is_refused() -> None:
+    """``arithmetic`` names combiners; it cannot reach past what the space declares."""
+    with pytest.raises(SearchSpaceError, match="subtract"):
+        SearchSpace(operators=("last", "mean"), arithmetic=("subtract",)).operator_names()
 
 
 def test_a_cross_entity_operator_appears_only_where_an_edge_is_declared() -> None:

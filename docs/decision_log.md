@@ -2534,3 +2534,40 @@ Enefit0   M3/ridge    -0.0852    -0.0852    -0.0852    -0.0852    0.0000    0.00
   untouched.
 - **Phase / gate:** Phase 6 — closes the seed-replication gap named in the exit-criterion
   adjudication; a Gate C input on how many seeds the frozen protocol should require per strategy.
+
+### 2026-09-15 — The operator registry and the search space are separated
+
+- **Decision:** `SearchSpace` gained an `operators` field naming the operator set a search draws
+  from, defaulting to `FROZEN_V1_OPERATORS` — the twenty-seven operators the registry held on
+  this date, written out in full rather than computed. `enumerate_candidates` now enumerates
+  from that declared set. Registering a new operator therefore changes what the software can
+  express and changes no recorded baseline; widening a grid is a line in a task config, recorded
+  in the run manifest by `SearchSpace.as_dict`. A declared operator the registry does not define
+  is refused, as is an `arithmetic` combiner the space does not declare.
+- **Alternatives considered:** (1) Leave the coupling and gate operator additions on the protocol
+  freeze — rejected, it makes every library improvement a protocol decision and was already
+  deferring operators that section 5.3 specifies. (2) Version the whole space as `v1`/`v2`
+  objects — rejected, it answers "which frozen bundle" rather than "what was this run allowed to
+  reach for", and the second question is the one a reviewer asks. (3) Tag operators in the
+  registry with the experiment that may use them — rejected, it puts experimental parameters in
+  the library, which is the coupling inverted rather than removed.
+- **Rationale:** Until today `enumerate_candidates` walked `registry.names()`, so adding an
+  operator silently widened every task's grid, including tasks whose Gate B and seed-replication
+  results were already recorded. The search space is a declared experimental parameter under
+  section 9.4 and was behaving as a derived one. This is the same defect `entity_graphs` carried
+  until 2026-09-11 — a search's assumptions taken from what happened to be available rather than
+  from what the task declared — one level up, and it takes the same remedy. The subtler harm was
+  to the baseline rather than the bookkeeping: `max_arithmetic_pairs` caps combined features, so
+  a wider leaf set changes *which* pairs survive the cap, and a registry addition would have
+  perturbed features that already existed rather than merely adding new ones.
+- **Affected experiments / artifacts:** None. `FROZEN_V1_OPERATORS` equals the registry as it
+  stood, so every task config that does not mention `operators` enumerates exactly the space it
+  did before; this was checked by candidate count and by operator distribution. Run manifests
+  written from today carry an additional `operators` key. No re-run is required.
+- **Made before or after viewing test results:** not applicable — an architecture change with no
+  effect on any score. The two failures in `tests/adapters/test_targets_and_splits.py` at the
+  time of this change belong to the untracked `beijing_reproduction` split, which declares a zero
+  gap between folds, and are unrelated.
+- **Phase / gate:** Phase 6 — unblocks operator work that section 5.3 specifies and the registry
+  has not yet implemented (exact quantile, trailing slope, categorical equality and membership),
+  which was waiting on a protocol question it no longer has to answer.

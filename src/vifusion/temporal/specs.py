@@ -21,6 +21,42 @@ window counts.
 **Variance is the sample variance**, with ``n - 1`` in the denominator and undefined for
 fewer than two observations. Population variance would be equally defensible; what matters
 is that one is chosen once and both implementations use it.
+
+The same "choose once" rule governs the order statistics and the trend, and each of these is
+a convention rather than a discovery. They are written here because three implementations —
+the engine, the batch lowering, and the oracle — must make the identical choice or the
+differential test measures the convention instead of the code.
+
+**Quantiles interpolate linearly between order statistics.** For ``n`` sorted values and a
+level ``q``, the position is ``h = (n - 1) * q``, and the result is
+``v[floor(h)] + (h - floor(h)) * (v[floor(h) + 1] - v[floor(h)])``. This is the default of
+NumPy's ``quantile`` and R's type 7, so a reader can reproduce a number without reading this
+file. The median is ``q = 0.5`` under the same rule, which makes it the midpoint of the two
+central values at even ``n`` rather than a separate definition. The interquartile range is
+``p75 - p25`` under the same rule.
+
+**Every order statistic is exact.** Selection and one interpolation step are deterministic
+floating-point operations with no summation order to disagree about, so unlike the mean and
+the variance these carry a parity tolerance of zero. The retained window is what makes that
+possible — section 5.3 excludes approximate sketches, so the whole window is materialised
+before it is reduced and an order statistic costs the state a mean already costs.
+
+**The median absolute deviation is unscaled**: ``median(|x - median(x)|)``, with no ``1.4826``
+factor. The scaled form estimates a normal distribution's standard deviation, and applying it
+here would bury a normality assumption inside an operator that reports a unit-preserving
+spread. A model that wants the scaled version can multiply by a constant.
+
+**The trend is an ordinary least-squares slope of value on event time in seconds**, measured
+from the earliest event time in the window, and undefined for fewer than two observations or
+when every observation shares one event time. The origin is mathematically irrelevant — a
+slope is invariant to shifting the time axis — and is fixed at the window's earliest point
+only to keep the numbers small enough that the centred sums stay well conditioned. Its unit is
+the source's unit per second.
+
+**Time since an extremum is measured to the most recent occurrence.** When a window's maximum
+appears more than once, ``time_since_max`` reports the seconds from the *latest* record
+carrying it to the prediction time, which is the reading a question like "how long since the
+peak" expects. It is never negative, and it is zero when the extremum is the newest record.
 """
 
 from __future__ import annotations
@@ -46,6 +82,27 @@ class Aggregate(StrEnum):
     STDDEV = "stddev"
     MIN = "min"
     MAX = "max"
+    MEDIAN = "median"
+    P25 = "p25"
+    P75 = "p75"
+    IQR = "iqr"
+    MAD = "mad"
+    SLOPE = "slope"
+    TIME_SINCE_MAX = "time_since_max"
+    TIME_SINCE_MIN = "time_since_min"
+
+
+TIME_AWARE: frozenset[Aggregate] = frozenset(
+    {Aggregate.SLOPE, Aggregate.TIME_SINCE_MAX, Aggregate.TIME_SINCE_MIN}
+)
+"""Aggregates that read each observation's event time, not only its value.
+
+**The distinction is structural, not a label.** A value-only aggregate reduces a bag of
+numbers and is therefore reusable wherever a bag of numbers is what there is — in particular
+across an entity graph, where ``cross_entity_mean`` reduces one reading per related entity and
+no time axis exists to regress against. A time-aware aggregate has no meaning there. Keeping
+the two families apart in the type system is what stops a future ``cross_entity_slope`` from
+being registered and silently regressing a value against an arbitrary entity ordering."""
 
 
 PARITY_TOLERANCE_ULPS: dict[Aggregate, int] = {
@@ -56,13 +113,27 @@ PARITY_TOLERANCE_ULPS: dict[Aggregate, int] = {
     Aggregate.MEAN: 4,
     Aggregate.VARIANCE: 16,
     Aggregate.STDDEV: 16,
+    Aggregate.MEDIAN: 0,
+    Aggregate.P25: 0,
+    Aggregate.P75: 0,
+    Aggregate.IQR: 0,
+    Aggregate.MAD: 0,
+    Aggregate.TIME_SINCE_MAX: 0,
+    Aggregate.TIME_SINCE_MIN: 0,
+    Aggregate.SLOPE: 32,
 }
 """Declared parity budget per operator, in units in the last place (section 10.2).
 
 Parity is an equivalence with a declared tolerance, not bit equality: an incremental Welford
 update and a two-pass sum of the same window differ in their last bits, and requiring exact
 agreement would produce a criterion that is quietly weakened later instead of stated
-honestly now. Counts and extrema are selections rather than arithmetic, so they are exact.
+honestly now. Counts and extrema are selections rather than arithmetic, so they are exact,
+and so — for the same reason — is every order statistic added on 2026-09-15: a quantile
+selects and interpolates once, and the median absolute deviation selects, subtracts
+elementwise, then selects again. Nothing in either is a sum, so there is no summation order
+for two implementations to disagree about. ``slope`` is the opposite case and carries the
+widest budget here: it sums products of centred deviations, which is the operation these
+tolerances exist for.
 
 Declared here and moved into the operator registry in Phase 3, where the compiler owns it
 and the artifact reports it.

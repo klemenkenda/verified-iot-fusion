@@ -476,6 +476,10 @@ def _node_unit(
         return "s"
     if operator.unit_rule == "multiply":
         return _combine_units("multiply", unit, unit, node_id, compilation) or DIMENSIONLESS
+    if operator.unit_rule == "per_second":
+        # A rate: the source's unit over a second. `slope` is the only operator with this
+        # rule, and reporting a trend in the units of a level is exactly the error it avoids.
+        return _combine_units("divide", unit, "s", node_id, compilation) or DIMENSIONLESS
     return unit
 
 
